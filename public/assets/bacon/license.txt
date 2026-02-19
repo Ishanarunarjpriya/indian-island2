@@ -1,0 +1,11 @@
+Model Information:
+* title:	Roblox Bacon Rigged
+* source:	https://sketchfab.com/3d-models/roblox-bacon-rigged-3793527fdc8c4b859d78e6db015bbc6f
+* author:	Trina.McCoy (https://sketchfab.com/Trina.McCoy)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Roblox Bacon Rigged" (https://sketchfab.com/3d-models/roblox-bacon-rigged-3793527fdc8c4b859d78e6db015bbc6f) by Trina.McCoy (https://sketchfab.com/Trina.McCoy) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

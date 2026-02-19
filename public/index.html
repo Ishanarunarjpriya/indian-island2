@@ -1,0 +1,883 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multiplayer 3D Arena</title>
+    <style>
+      :root {
+        --bg-top: #d7e7f3;
+        --bg-bottom: #f7f1e1;
+        --hud-bg: rgba(16, 24, 32, 0.76);
+        --hud-border: rgba(255, 255, 255, 0.18);
+        --text-main: #f7fafc;
+        --accent: #ffd166;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+        background: linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+      }
+
+      #name-tags {
+        position: fixed;
+        inset: 0;
+        z-index: 9;
+        pointer-events: none;
+      }
+
+      .player-tag {
+        position: absolute;
+        transform: translate(-50%, -100%);
+        background: rgba(15, 23, 42, 0.78);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        color: #f8fafc;
+        padding: 3px 7px;
+        border-radius: 999px;
+        font-size: 11px;
+        letter-spacing: 0.2px;
+        white-space: nowrap;
+      }
+
+      .chat-bubble {
+        position: absolute;
+        transform: translate(-50%, -100%);
+        background: rgba(255, 255, 255, 0.95);
+        color: #0f172a;
+        border: 1px solid rgba(15, 23, 42, 0.25);
+        border-radius: 10px;
+        padding: 6px 8px;
+        font-size: 12px;
+        max-width: 220px;
+        white-space: normal;
+        line-height: 1.2;
+        word-break: break-word;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
+      }
+
+      .panel {
+        color: var(--text-main);
+        background: var(--hud-bg);
+        border: 1px solid var(--hud-border);
+        border-radius: 12px;
+        backdrop-filter: blur(6px);
+      }
+
+      #hud {
+        position: fixed;
+        left: 16px;
+        top: 16px;
+        z-index: 10;
+        padding: 12px 14px;
+        min-width: 240px;
+      }
+
+      #hud .title {
+        margin: 0 0 8px;
+        font-size: 15px;
+        letter-spacing: 0.5px;
+      }
+
+      #hud p {
+        margin: 4px 0;
+        font-size: 13px;
+      }
+
+      #hud strong {
+        color: var(--accent);
+      }
+
+      #stamina-wrap {
+        margin-top: 8px;
+      }
+
+      #stamina-bar {
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        overflow: hidden;
+      }
+
+      #stamina-fill {
+        height: 100%;
+        width: 100%;
+        background: linear-gradient(90deg, #22c55e, #facc15);
+      }
+
+      #voice-toggle {
+        margin-top: 8px;
+        width: 100%;
+        height: 34px;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      #menu-toggle {
+        position: fixed;
+        right: 16px;
+        top: 16px;
+        z-index: 21;
+        width: 44px;
+        height: 44px;
+        border-radius: 10px;
+        padding: 0;
+        background: rgba(16, 24, 32, 0.86);
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        display: grid;
+        place-items: center;
+      }
+
+      #menu-toggle .line-stack {
+        display: grid;
+        gap: 4px;
+      }
+
+      #menu-toggle .line-stack span {
+        display: block;
+        width: 18px;
+        height: 2px;
+        border-radius: 999px;
+        background: #f8fafc;
+      }
+
+      #menu-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 25;
+        background: rgba(2, 8, 20, 0.55);
+        backdrop-filter: blur(3px);
+        display: grid;
+        place-items: center;
+      }
+
+      #menu-panel {
+        width: min(500px, calc(100vw - 28px));
+        max-height: min(86vh, 760px);
+        overflow-y: auto;
+        padding: 14px;
+        display: grid;
+        gap: 12px;
+      }
+
+      #menu-panel h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      .menu-section {
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 10px;
+        padding: 10px;
+        background: rgba(0, 0, 0, 0.18);
+      }
+
+      .menu-section h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        color: #f8fafc;
+      }
+
+      .menu-controls {
+        margin: 0;
+        padding-left: 18px;
+        display: grid;
+        gap: 4px;
+        font-size: 12px;
+        color: #cbd5e1;
+      }
+
+      .menu-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      #save-quit {
+        width: 100%;
+        height: 36px;
+      }
+
+      #auth-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        display: grid;
+        place-items: center;
+        background: rgba(2, 8, 20, 0.78);
+        backdrop-filter: blur(4px);
+      }
+
+      #auth-panel {
+        width: min(420px, calc(100vw - 28px));
+        padding: 16px;
+        display: grid;
+        gap: 10px;
+      }
+
+      #auth-panel h2 {
+        margin: 0;
+      }
+
+      .auth-field {
+        display: grid;
+        gap: 6px;
+      }
+
+      .auth-field label {
+        font-size: 12px;
+        color: #cbd5e1;
+      }
+
+      #auth-username,
+      #auth-password {
+        width: 100%;
+      }
+
+      #auth-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      #auth-status {
+        margin: 0;
+        font-size: 12px;
+        color: #cbd5e1;
+        min-height: 18px;
+      }
+
+      #mini-panel {
+        position: fixed;
+        left: 16px;
+        bottom: 16px;
+        z-index: 10;
+        padding: 10px;
+        width: 196px;
+      }
+
+      #mini-map {
+        width: 176px;
+        height: 176px;
+        border-radius: 12px;
+        display: block;
+        background: rgba(0, 0, 0, 0.25);
+      }
+
+      #compass {
+        margin-top: 6px;
+        font-size: 12px;
+      }
+
+      #world-state {
+        position: fixed;
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 11;
+        padding: 8px 12px;
+        font-size: 12px;
+      }
+
+      #chat-panel {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        z-index: 10;
+        width: min(360px, calc(100vw - 32px));
+        display: grid;
+        grid-template-rows: 1fr auto;
+        gap: 8px;
+        padding: 10px;
+      }
+
+      #chat-log {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        max-height: 180px;
+        overflow-y: auto;
+        display: grid;
+        gap: 5px;
+      }
+
+      #chat-log li {
+        font-size: 12px;
+        line-height: 1.35;
+        word-break: break-word;
+      }
+
+      #chat-log .meta {
+        color: #a5b4c9;
+        margin-right: 6px;
+      }
+
+      #chat-form {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+      }
+
+      #chat-input,
+      #name-input,
+      #skin-input,
+      #hair-style-input,
+      #face-style-input {
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(0, 0, 0, 0.18);
+        color: var(--text-main);
+        border-radius: 8px;
+        padding: 9px 10px;
+        font: inherit;
+        outline: none;
+      }
+
+      #chat-input:focus,
+      #name-input:focus,
+      #skin-input:focus,
+      #hair-style-input:focus,
+      #face-style-input:focus {
+        border-color: var(--accent);
+      }
+
+      button {
+        border: none;
+        border-radius: 8px;
+        padding: 0 12px;
+        font: inherit;
+        font-weight: 700;
+        background: var(--accent);
+        color: #202020;
+        cursor: pointer;
+      }
+
+      #customize-open {
+        margin-top: 8px;
+        width: 100%;
+        height: 34px;
+      }
+
+      #customize-panel,
+      #action-panel {
+        position: relative;
+        z-index: 10;
+        width: min(340px, calc(100vw - 32px));
+        padding: 10px;
+      }
+
+      #action-panel {
+        position: fixed;
+        right: 16px;
+        top: 16px;
+      }
+
+      #customize-panel h2,
+      #action-panel h2 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+
+      #customize-panel {
+        width: min(900px, calc(100vw - 28px));
+        padding: 14px;
+        max-height: min(88vh, 760px);
+        display: flex;
+        flex-direction: column;
+      }
+
+      #customize-layout {
+        display: grid;
+        grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+        gap: 14px;
+        min-height: 0;
+      }
+
+      #customize-preview-wrap {
+        background: rgba(2, 6, 23, 0.35);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 12px;
+        padding: 10px;
+      }
+
+      #customize-preview-title {
+        margin: 0 0 8px;
+        font-size: 12px;
+        color: #cbd5e1;
+        letter-spacing: 0.4px;
+      }
+
+      #customize-preview {
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        border-radius: 10px;
+        display: block;
+        background: radial-gradient(circle at 50% 30%, #2f3a4b, #0f172a 72%);
+      }
+
+      #customize-form {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+        max-height: 420px;
+        overflow-y: auto;
+        padding-right: 6px;
+      }
+
+      #name-input {
+        grid-column: 1 / -1;
+      }
+
+      .field-row {
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 10px;
+        padding: 8px 10px;
+        background: rgba(0, 0, 0, 0.16);
+      }
+
+      .field-label {
+        font-size: 12px;
+        color: #cbd5e1;
+        letter-spacing: 0.2px;
+      }
+
+      #skin-input,
+      #hair-style-input,
+      #face-style-input {
+        width: 100%;
+        max-width: 220px;
+      }
+
+      .section-title {
+        grid-column: 1 / -1;
+        margin: 8px 0 2px;
+        font-size: 12px;
+        color: #cbd5e1;
+      }
+
+      .item-grid {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .item-card {
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 10px;
+        background: linear-gradient(180deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95));
+        color: #f8fafc;
+        min-height: 64px;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 6px;
+      }
+
+      .item-card.active {
+        outline: 2px solid #facc15;
+        border-color: #facc15;
+      }
+
+      #customize-apply {
+        grid-column: 1 / -1;
+        height: 38px;
+        margin-top: 6px;
+      }
+
+      .outfit-grid {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .outfit-btn {
+        min-height: 36px;
+        font-size: 12px;
+      }
+
+      #customize-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: grid;
+        place-items: center;
+        background: rgba(2, 8, 20, 0.62);
+        backdrop-filter: blur(3px);
+      }
+
+      #customize-modal.hidden {
+        display: none;
+      }
+
+      #customize-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+
+      #customize-header h2 {
+        margin: 0;
+      }
+
+      #customize-close {
+        width: 34px;
+        height: 34px;
+        padding: 0;
+      }
+
+      #color-input,
+      #pants-color-input,
+      #shoes-color-input {
+        width: 72px;
+        height: 34px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(0, 0, 0, 0.18);
+        border-radius: 8px;
+        padding: 4px;
+      }
+
+      #customize-status {
+        margin-top: 8px;
+        font-size: 12px;
+        color: #cbd5e1;
+      }
+
+      @media (max-width: 820px) {
+        #customize-layout {
+          grid-template-columns: 1fr;
+        }
+
+        #customize-form {
+          max-height: 320px;
+        }
+      }
+
+      #emote-buttons {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+      }
+
+      #mobile-controls {
+        position: fixed;
+        inset: 0;
+        z-index: 12;
+        pointer-events: none;
+        display: none;
+      }
+
+      #emote-wheel {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 220px;
+        height: 220px;
+        z-index: 30;
+        pointer-events: none;
+      }
+
+      #emote-wheel.hidden {
+        display: none;
+      }
+
+      .wheel-btn {
+        position: absolute;
+        width: 86px;
+        height: 40px;
+        border-radius: 999px;
+        pointer-events: auto;
+      }
+
+      .wheel-top {
+        left: 50%;
+        top: 10px;
+        transform: translateX(-50%);
+      }
+
+      .wheel-left {
+        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      .wheel-right {
+        right: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      #joystick {
+        position: absolute;
+        left: 14px;
+        bottom: 18px;
+        width: 120px;
+        height: 120px;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        pointer-events: auto;
+        touch-action: none;
+      }
+
+      #joystick-stick {
+        position: absolute;
+        left: 40px;
+        top: 40px;
+        width: 40px;
+        height: 40px;
+        border-radius: 999px;
+        background: rgba(255, 209, 102, 0.85);
+      }
+
+      #mobile-actions {
+        position: absolute;
+        right: 14px;
+        bottom: 18px;
+        display: grid;
+        grid-template-columns: repeat(2, 64px);
+        gap: 10px;
+        pointer-events: auto;
+      }
+
+      .mobile-btn {
+        width: 64px;
+        height: 64px;
+        border-radius: 999px;
+        padding: 0;
+        font-size: 11px;
+      }
+
+      @media (pointer: coarse) {
+        #mobile-controls {
+          display: block;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="name-tags"></div>
+
+    <div id="world-state" class="panel">
+      <span id="time-label">Morning</span> | <span id="weather-label">Clear</span>
+    </div>
+
+    <button id="menu-toggle" type="button" aria-label="Open menu">
+      <span class="line-stack"><span></span><span></span><span></span></span>
+    </button>
+
+    <div id="menu-overlay" class="hidden">
+      <section id="menu-panel" class="panel">
+        <h2>Game Menu</h2>
+        <section class="menu-section">
+          <h3>Controls</h3>
+          <ul class="menu-controls">
+            <li>`WASD` move</li>
+            <li>`Shift` sprint</li>
+            <li>`C` slide / dive down in water</li>
+            <li>`Space` jump / swim up</li>
+            <li>Drag mouse to orbit camera, scroll to zoom</li>
+            <li>`E` interact / get off boat</li>
+            <li>`1`,`2`,`3` emotes or hold `Q`</li>
+          </ul>
+        </section>
+        <section class="menu-section">
+          <h3>Character</h3>
+          <div class="menu-actions">
+            <button id="customize-open" type="button">Customize Character</button>
+            <button id="voice-toggle" type="button">Enable Proximity Voice</button>
+          </div>
+        </section>
+        <section class="menu-section">
+          <h3>Account</h3>
+          <button id="save-quit" type="button">Save and Quit</button>
+        </section>
+      </section>
+    </div>
+
+    <div id="auth-modal">
+      <section id="auth-panel" class="panel">
+        <h2>Login</h2>
+        <p style="margin:0;font-size:12px;color:#cbd5e1;">Create an account or login to load your saved progress.</p>
+        <div class="auth-field">
+          <label for="auth-username">Username</label>
+          <input id="auth-username" maxlength="20" autocomplete="username" placeholder="letters, numbers, underscore" />
+        </div>
+        <div class="auth-field">
+          <label for="auth-password">Password</label>
+          <input id="auth-password" type="password" maxlength="80" autocomplete="current-password" placeholder="password" />
+        </div>
+        <div id="auth-actions">
+          <button id="auth-login" type="button">Login</button>
+          <button id="auth-register" type="button">Create Account</button>
+        </div>
+        <p id="auth-status"></p>
+      </section>
+    </div>
+
+    <div id="hud" class="panel">
+      <h1 class="title">Multiplayer 3D Arena</h1>
+      <p><strong>Connected players:</strong> <span id="player-count">1</span></p>
+      <p><strong>Status:</strong> <span id="status">Connecting...</span></p>
+      <p><strong>Interact:</strong> <span id="interact-hint">Move closer to beacon</span></p>
+      <div id="stamina-wrap">
+        <p><strong>Stamina</strong></p>
+        <div id="stamina-bar"><div id="stamina-fill"></div></div>
+      </div>
+    </div>
+
+    <section id="mini-panel" class="panel">
+      <canvas id="mini-map" width="176" height="176"></canvas>
+      <div id="compass">Heading: N</div>
+    </section>
+
+    <section id="action-panel" class="panel">
+      <h2>Emotes</h2>
+      <div id="emote-buttons">
+        <button type="button" data-emote="wave">Wave</button>
+        <button type="button" data-emote="dance">Dance</button>
+        <button type="button" data-emote="cheer">Cheer</button>
+      </div>
+    </section>
+
+    <section id="chat-panel" class="panel">
+      <ul id="chat-log" aria-live="polite"></ul>
+      <form id="chat-form">
+        <input id="chat-input" autocomplete="off" maxlength="220" placeholder="Type message and press Enter" />
+        <button id="chat-send" type="submit">Send</button>
+      </form>
+    </section>
+
+    <div id="customize-modal" class="hidden">
+      <section id="customize-panel" class="panel">
+        <div id="customize-header">
+          <h2>Customize Human</h2>
+          <button id="customize-close" type="button">X</button>
+        </div>
+        <div id="customize-layout">
+          <div id="customize-preview-wrap">
+            <p id="customize-preview-title">Avatar Preview</p>
+            <canvas id="customize-preview" width="360" height="360"></canvas>
+          </div>
+          <form id="customize-form">
+            <input id="name-input" maxlength="18" placeholder="Display name" />
+            <div class="field-row">
+              <span class="field-label">Skin Tone</span>
+              <select id="skin-input">
+                <option value="#f3cfb3">Skin Light</option>
+                <option value="#d7a47c">Skin Tan</option>
+                <option value="#b47a57">Skin Brown</option>
+                <option value="#8e5e3f">Skin Deep</option>
+              </select>
+            </div>
+            <div class="field-row">
+              <span class="field-label">T-Shirt Color</span>
+              <input id="color-input" type="color" value="#5a8ef2" title="T-shirt color" />
+            </div>
+            <div class="field-row">
+              <span class="field-label">Pants Color</span>
+              <input id="pants-color-input" type="color" value="#334155" title="Pants color" />
+            </div>
+            <div class="field-row">
+              <span class="field-label">Shoes Color</span>
+              <input id="shoes-color-input" type="color" value="#111827" title="Shoes color" />
+            </div>
+            <div class="section-title">Hair</div>
+            <div class="item-grid" id="hair-grid">
+              <button class="item-card" type="button" data-type="hair" data-value="short">Short</button>
+              <button class="item-card" type="button" data-type="hair" data-value="sidepart">Side Part</button>
+              <button class="item-card" type="button" data-type="hair" data-value="spiky">Spiky</button>
+              <button class="item-card" type="button" data-type="hair" data-value="long">Long</button>
+              <button class="item-card" type="button" data-type="hair" data-value="ponytail">Ponytail</button>
+              <button class="item-card" type="button" data-type="hair" data-value="bob">Bob Cut</button>
+              <button class="item-card" type="button" data-type="hair" data-value="wavy">Wavy</button>
+            </div>
+            <select id="hair-style-input" hidden>
+              <option value="short">Short</option>
+              <option value="sidepart">Side Part</option>
+              <option value="spiky">Spiky</option>
+              <option value="long">Long</option>
+              <option value="ponytail">Ponytail</option>
+              <option value="bob">Bob Cut</option>
+              <option value="wavy">Wavy</option>
+              <option value="none">None</option>
+            </select>
+            <input id="hair-color-input" type="color" value="#2b211c" />
+            <div class="section-title">Face</div>
+            <div class="item-grid" id="face-grid">
+              <button class="item-card" type="button" data-type="face" data-value="smile">Smile</button>
+              <button class="item-card" type="button" data-type="face" data-value="serious">Serious</button>
+              <button class="item-card" type="button" data-type="face" data-value="grin">Grin</button>
+              <button class="item-card" type="button" data-type="face" data-value="wink">Wink</button>
+              <button class="item-card" type="button" data-type="face" data-value="lashessmile">Lashes Smile</button>
+              <button class="item-card" type="button" data-type="face" data-value="soft">Soft</button>
+            </div>
+            <div class="section-title">Accessories (Inventory)</div>
+            <div class="item-grid" id="accessory-grid">
+              <button class="item-card" type="button" data-type="accessory" data-value="hat">Hat</button>
+              <button class="item-card" type="button" data-type="accessory" data-value="glasses">Glasses</button>
+              <button class="item-card" type="button" data-type="accessory" data-value="backpack">Backpack</button>
+            </div>
+            <div class="section-title">Outfits</div>
+            <div class="outfit-grid">
+              <button class="outfit-btn" type="button" data-outfit-save="1">Save Slot 1</button>
+              <button class="outfit-btn" type="button" data-outfit-load="1">Load Slot 1</button>
+              <button class="outfit-btn" type="button" data-outfit-save="2">Save Slot 2</button>
+              <button class="outfit-btn" type="button" data-outfit-load="2">Load Slot 2</button>
+              <button class="outfit-btn" type="button" data-outfit-save="3">Save Slot 3</button>
+              <button class="outfit-btn" type="button" data-outfit-load="3">Load Slot 3</button>
+            </div>
+            <select id="face-style-input" hidden>
+              <option value="smile">Smile</option>
+              <option value="serious">Serious</option>
+              <option value="grin">Grin</option>
+              <option value="wink">Wink</option>
+              <option value="lashessmile">Lashes Smile</option>
+              <option value="soft">Soft</option>
+            </select>
+            <button id="customize-apply" type="submit">Apply</button>
+          </form>
+        </div>
+        <div id="customize-status">No changes yet.</div>
+      </section>
+    </div>
+
+    <section id="mobile-controls">
+      <div id="joystick">
+        <div id="joystick-stick"></div>
+      </div>
+      <div id="mobile-actions">
+        <button id="btn-jump" class="mobile-btn" type="button">Jump</button>
+        <button id="btn-use" class="mobile-btn" type="button">Use</button>
+        <button id="btn-emote" class="mobile-btn" type="button">Emote</button>
+      </div>
+    </section>
+
+    <div id="emote-wheel" class="hidden">
+      <button class="wheel-btn wheel-top" type="button" data-wheel-emote="wave">Wave</button>
+      <button class="wheel-btn wheel-left" type="button" data-wheel-emote="dance">Dance</button>
+      <button class="wheel-btn wheel-right" type="button" data-wheel-emote="cheer">Cheer</button>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>
