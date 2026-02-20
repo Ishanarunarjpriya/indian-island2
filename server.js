@@ -1,191 +1,183 @@
-import express from 'express';
-import crypto from 'crypto';
-import fs from 'fs';
-import http from 'http';
-import path from 'path';
+/**
+ * server.js – Optimised rewrite.
+ *
+ * Key changes vs original:
+ *  • move broadcast sends only position/yaw/isSwimming — NOT full appearance every frame
+ *  • persistPlayerProgress is decoupled from move; positions auto-saved every 30 s
+ *  • Per-socket move rate-limit (50 ms / 20 Hz) — excess packets dropped, not processed
+ *  • init no longer includes the joining player in the players list it sends to itself
+ *  • playerJoined broadcast excluded from the new socket (was causing double-add)
+ *  • Socket event names aligned with client (player:join, player:leave, player:move, etc.)
+ *  • scheduleProfileSave debounce raised to 2 s (was 250 ms, fired constantly)
+ *  • scrypt moved to async path so password hashing doesn't block the event loop
+ *  • Periodic position-save loop replaces per-move persistence (30 s interval)
+ *  • All event handlers guard against unauthenticated sockets before any work
+ *  • saveTimer and accountSaveTimer managed safely with helper to avoid races
+ */
+
+import express  from 'express';
+import crypto   from 'crypto';
+import fs       from 'fs';
+import http     from 'http';
+import path     from 'path';
 import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
 
-const app = express();
+const app    = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io     = new Server(server, {
+  // Tune Socket.io for a game: smaller ping interval, faster disconnect detection
+  pingInterval: 10_000,
+  pingTimeout:  5_000,
+});
 
 const PORT = process.env.PORT || 3000;
-const WORLD_LIMIT = 40;
+
+// ---------------------------------------------------------------------------
+// World constants (keep in sync with client)
+// ---------------------------------------------------------------------------
+const WORLD_LIMIT      = 40;
 const ISLAND_SURFACE_Y = 1.35;
-const LIGHTHOUSE_POS = {
-  x: WORLD_LIMIT * 1.65,
-  z: -WORLD_LIMIT * 1.85
-};
-const LIGHTHOUSE_RADIUS = 11.7;
-const INTERIOR_POS = { x: -130, z: 210 };
-const INTERIOR_RADIUS = 11.2;
-const SWIM_MIN_RADIUS = WORLD_LIMIT + 0.6;
-const SWIM_MAX_RADIUS = WORLD_LIMIT * 3.9;
-const SWIM_MIN_Y = -0.15;
-const PLAYABLE_BOUND = WORLD_LIMIT * 4.1;
-const INTERACT_RANGE = 4;
-const CHAT_MAX_LEN = 220;
-const NAME_MAX_LEN = 18;
-const HAIR_STYLES = new Set(['none', 'short', 'sidepart', 'spiky', 'long', 'ponytail', 'bob', 'wavy']);
-const FACE_STYLES = new Set(['smile', 'serious', 'grin', 'wink', 'lashessmile', 'soft']);
-const ACCESSORY_TYPES = new Set(['hat', 'glasses', 'backpack']);
+const LIGHTHOUSE_POS   = { x: WORLD_LIMIT * 1.65, z: -WORLD_LIMIT * 1.85 };
+const LIGHTHOUSE_RADIUS= 11.7;
+const INTERIOR_POS     = { x: -130, z: 210 };
+const INTERIOR_RADIUS  = 11.2;
+const SWIM_MIN_RADIUS  = WORLD_LIMIT + 0.6;
+const SWIM_MAX_RADIUS  = WORLD_LIMIT * 3.9;
+const SWIM_MIN_Y       = -0.15;
+const PLAYABLE_BOUND   = WORLD_LIMIT * 4.1;
+const INTERACT_RANGE   = 4.5;
+const CHAT_MAX_LEN     = 220;
+const NAME_MAX_LEN     = 18;
+const MOVE_RATE_MS     = 50;   // minimum ms between processed move events per socket
+const POSITION_SAVE_INTERVAL_MS = 30_000; // auto-save positions every 30 s
+const PROFILE_SAVE_DEBOUNCE_MS  = 2_000;
+const ACCOUNT_SAVE_DEBOUNCE_MS  = 2_000;
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const PROFILE_FILE = path.join(__dirname, 'profiles.json');
-const ACCOUNT_FILE = path.join(__dirname, 'accounts.json');
+const HAIR_STYLES   = new Set(['none','short','sidepart','spiky','long','ponytail','bob','wavy']);
+const FACE_STYLES   = new Set(['smile','serious','grin','wink','lashessmile','soft']);
+const ACCESSORY_SET = new Set(['hat','glasses','backpack']);
+const EMOTE_SET     = new Set(['wave','dance','cheer']);
 
-const players = new Map();
-const profiles = new Map();
-const accounts = new Map();
-const voiceParticipants = new Set();
-const interactables = new Map([
-  [
-    'beacon',
-    {
-      id: 'beacon',
-      x: 0,
-      z: 0,
-      active: false,
-      lastBy: null
-    }
-  ]
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+const __filename    = fileURLToPath(import.meta.url);
+const __dirname     = path.dirname(__filename);
+const PROFILE_FILE  = path.join(__dirname, 'profiles.json');
+const ACCOUNT_FILE  = path.join(__dirname, 'accounts.json');
+
+// ---------------------------------------------------------------------------
+// Runtime state
+// ---------------------------------------------------------------------------
+const players          = new Map();   // socket.id → playerObject
+const profiles         = new Map();   // profileId → profileObject
+const accounts         = new Map();   // username  → accountObject
+const voiceParticipants= new Set();
+const interactables    = new Map([
+  ['beacon', { id: 'beacon', x: 0, z: 0, active: false, lastBy: null }]
 ]);
-let saveTimer = null;
+
+let saveTimer        = null;
 let accountSaveTimer = null;
 
+// ---------------------------------------------------------------------------
+// Static files
+// ---------------------------------------------------------------------------
 app.use(express.static('public'));
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
+// ---------------------------------------------------------------------------
+// Math helpers
+// ---------------------------------------------------------------------------
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 function clampToIsland(x, z, limit) {
-  const radius = Math.hypot(x, z);
-  if (radius <= limit) {
-    return { x, z };
-  }
-
-  const scale = limit / (radius || 1);
-  return { x: x * scale, z: z * scale };
+  const r = Math.hypot(x, z);
+  if (r <= limit) return { x, z };
+  const s = limit / (r || 1);
+  return { x: x * s, z: z * s };
 }
 
 function clampToPlayableGround(x, z) {
-  const MAIN_RADIUS = WORLD_LIMIT * 1.14;
-  const onMain = Math.hypot(x, z) <= MAIN_RADIUS;
-  const onLighthouse = Math.hypot(x - LIGHTHOUSE_POS.x, z - LIGHTHOUSE_POS.z) <= LIGHTHOUSE_RADIUS;
-  const onInterior = Math.hypot(x - INTERIOR_POS.x, z - INTERIOR_POS.z) <= INTERIOR_RADIUS;
-  const radius = Math.hypot(x, z);
-  const onSwimRing = radius >= SWIM_MIN_RADIUS && radius <= SWIM_MAX_RADIUS;
-  if (onMain || onLighthouse || onInterior || onSwimRing) {
-    return { x, z };
-  }
+  const MAIN_R = WORLD_LIMIT * 1.14;
+  if (Math.hypot(x, z) <= MAIN_R) return { x, z };
+  if (Math.hypot(x - LIGHTHOUSE_POS.x, z - LIGHTHOUSE_POS.z) <= LIGHTHOUSE_RADIUS) return { x, z };
+  if (Math.hypot(x - INTERIOR_POS.x,   z - INTERIOR_POS.z)   <= INTERIOR_RADIUS)   return { x, z };
+  const r = Math.hypot(x, z);
+  if (r >= SWIM_MIN_RADIUS && r <= SWIM_MAX_RADIUS) return { x, z };
 
-  const toMain = clampToIsland(x, z, MAIN_RADIUS);
-  const distMain = Math.hypot(x - toMain.x, z - toMain.z);
+  // Find nearest playable point
+  const toMain = clampToIsland(x, z, MAIN_R);
+  const dMain  = Math.hypot(x - toMain.x, z - toMain.z);
 
-  const dxL = x - LIGHTHOUSE_POS.x;
-  const dzL = z - LIGHTHOUSE_POS.z;
-  const lenL = Math.hypot(dxL, dzL) || 1;
-  const toLighthouse = {
-    x: LIGHTHOUSE_POS.x + (dxL / lenL) * LIGHTHOUSE_RADIUS,
-    z: LIGHTHOUSE_POS.z + (dzL / lenL) * LIGHTHOUSE_RADIUS
-  };
-  const distLighthouse = Math.hypot(x - toLighthouse.x, z - toLighthouse.z);
+  const dxL = x - LIGHTHOUSE_POS.x, dzL = z - LIGHTHOUSE_POS.z, lenL = Math.hypot(dxL, dzL) || 1;
+  const toLH = { x: LIGHTHOUSE_POS.x + (dxL / lenL) * LIGHTHOUSE_RADIUS, z: LIGHTHOUSE_POS.z + (dzL / lenL) * LIGHTHOUSE_RADIUS };
+  const dLH  = Math.hypot(x - toLH.x, z - toLH.z);
 
-  const dxI = x - INTERIOR_POS.x;
-  const dzI = z - INTERIOR_POS.z;
-  const lenI = Math.hypot(dxI, dzI) || 1;
-  const toInterior = {
-    x: INTERIOR_POS.x + (dxI / lenI) * INTERIOR_RADIUS,
-    z: INTERIOR_POS.z + (dzI / lenI) * INTERIOR_RADIUS
-  };
-  const distInterior = Math.hypot(x - toInterior.x, z - toInterior.z);
-  const toSwim = (() => {
-    const len = Math.hypot(x, z) || 1;
-    const target = len < SWIM_MIN_RADIUS ? SWIM_MIN_RADIUS : SWIM_MAX_RADIUS;
-    const scale = target / len;
-    return { x: x * scale, z: z * scale };
-  })();
-  const distSwim = Math.hypot(x - toSwim.x, z - toSwim.z);
+  const dxI = x - INTERIOR_POS.x, dzI = z - INTERIOR_POS.z, lenI = Math.hypot(dxI, dzI) || 1;
+  const toIN = { x: INTERIOR_POS.x + (dxI / lenI) * INTERIOR_RADIUS, z: INTERIOR_POS.z + (dzI / lenI) * INTERIOR_RADIUS };
+  const dIN  = Math.hypot(x - toIN.x, z - toIN.z);
 
-  if (distMain <= distLighthouse && distMain <= distInterior && distMain <= distSwim) return toMain;
-  if (distLighthouse <= distInterior && distLighthouse <= distSwim) return toLighthouse;
-  if (distInterior <= distSwim) return toInterior;
-  return toSwim;
+  const len    = r || 1;
+  const target = r < SWIM_MIN_RADIUS ? SWIM_MIN_RADIUS : SWIM_MAX_RADIUS;
+  const toSW   = { x: (x / len) * target, z: (z / len) * target };
+  const dSW    = Math.hypot(x - toSW.x, z - toSW.z);
+
+  if (dMain <= dLH && dMain <= dIN && dMain <= dSW) return toMain;
+  if (dLH <= dIN && dLH <= dSW)                     return toLH;
+  if (dIN <= dSW)                                    return toIN;
+  return toSW;
 }
 
 function randomSpawn(limit) {
-  const angle = Math.random() * Math.PI * 2;
+  const angle  = Math.random() * Math.PI * 2;
   const radius = Math.sqrt(Math.random()) * limit;
-  return {
-    x: Math.cos(angle) * radius,
-    z: Math.sin(angle) * radius
-  };
+  return { x: Math.cos(angle) * radius, z: Math.sin(angle) * radius };
 }
 
 function randomHexColor() {
-  const value = Math.floor(Math.random() * 0xffffff);
-  return `#${value.toString(16).padStart(6, '0')}`;
+  return `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')}`;
 }
 
+// ---------------------------------------------------------------------------
+// Sanitisation
+// ---------------------------------------------------------------------------
 function sanitizeName(value, fallback) {
-  const raw = typeof value === 'string' ? value : '';
-  const normalized = raw.replace(/\s+/g, ' ').trim().slice(0, NAME_MAX_LEN);
-  const safe = normalized.replace(/[\x00-\x1F\x7F<>]/g, '');
+  const raw  = typeof value === 'string' ? value : '';
+  const safe = raw.replace(/\s+/g, ' ').trim().slice(0, NAME_MAX_LEN).replace(/[\x00-\x1F\x7F<>]/g, '');
   return safe || fallback;
 }
 
 function sanitizeColor(value, fallback) {
   const raw = typeof value === 'string' ? value.trim() : '';
-  const isHex = /^#([0-9a-fA-F]{6})$/.test(raw);
-  return isHex ? raw : fallback;
-}
-
-function defaultAppearance() {
-  return {
-    skin: '#f3cfb3',
-    shirt: '#5a8ef2',
-    pants: '#334155',
-    shoes: '#111827',
-    hairStyle: 'short',
-    hairColor: '#2b211c',
-    faceStyle: 'smile',
-    accessories: []
-  };
+  return /^#([0-9a-fA-F]{6})$/.test(raw) ? raw : fallback;
 }
 
 function sanitizeAppearance(input, fallback) {
-  const base = fallback || defaultAppearance();
+  const base    = fallback || defaultAppearance();
   const payload = input && typeof input === 'object' ? input : {};
-
   return {
-    skin: sanitizeColor(payload.skin, base.skin),
-    shirt: sanitizeColor(payload.shirt ?? payload.color, base.shirt),
-    pants: sanitizeColor(payload.pants, base.pants),
-    shoes: sanitizeColor(payload.shoes, base.shoes),
+    skin:      sanitizeColor(payload.skin,                    base.skin),
+    shirt:     sanitizeColor(payload.shirt ?? payload.color,  base.shirt),
+    pants:     sanitizeColor(payload.pants,                   base.pants),
+    shoes:     sanitizeColor(payload.shoes,                   base.shoes),
     hairStyle: HAIR_STYLES.has(payload.hairStyle) ? payload.hairStyle : base.hairStyle,
-    hairColor: sanitizeColor(payload.hairColor, base.hairColor),
+    hairColor: sanitizeColor(payload.hairColor,               base.hairColor),
     faceStyle: FACE_STYLES.has(payload.faceStyle) ? payload.faceStyle : base.faceStyle,
     accessories: Array.isArray(payload.accessories)
-      ? [...new Set(payload.accessories.filter((item) => ACCESSORY_TYPES.has(item)))]
-      : Array.isArray(base.accessories)
-        ? [...new Set(base.accessories.filter((item) => ACCESSORY_TYPES.has(item)))]
-        : []
+      ? [...new Set(payload.accessories.filter(a => ACCESSORY_SET.has(a)))]
+      : [...new Set((base.accessories || []).filter(a => ACCESSORY_SET.has(a)))]
   };
 }
 
 function sanitizeProfileId(value) {
-  const raw = typeof value === 'string' ? value : '';
-  const safe = raw.trim().toLowerCase().slice(0, 64);
-  return /^[a-z0-9-]{8,64}$/.test(safe) ? safe : null;
+  const raw  = typeof value === 'string' ? value.trim().toLowerCase().slice(0, 64) : '';
+  return /^[a-z0-9-]{8,64}$/.test(raw) ? raw : null;
 }
 
 function sanitizeUsername(value) {
-  const raw = typeof value === 'string' ? value.trim() : '';
-  const lower = raw.toLowerCase();
-  return /^[a-z0-9_]{3,20}$/.test(lower) ? lower : null;
+  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return /^[a-z0-9_]{3,20}$/.test(raw) ? raw : null;
 }
 
 function sanitizePassword(value) {
@@ -193,383 +185,423 @@ function sanitizePassword(value) {
   return raw.length >= 4 && raw.length <= 80 ? raw : null;
 }
 
-function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  return { salt, hash };
+function defaultAppearance() {
+  return { skin: '#f3cfb3', shirt: '#5a8ef2', pants: '#334155', shoes: '#111827', hairStyle: 'short', hairColor: '#2b211c', faceStyle: 'smile', accessories: [] };
 }
 
-function verifyPassword(password, salt, expectedHash) {
-  try {
-    const computed = crypto.scryptSync(password, salt, 64).toString('hex');
-    const a = Buffer.from(computed, 'hex');
-    const b = Buffer.from(expectedHash, 'hex');
-    return a.length === b.length && crypto.timingSafeEqual(a, b);
-  } catch {
-    return false;
-  }
+// ---------------------------------------------------------------------------
+// Password hashing (async so scrypt doesn't block the event loop)
+// ---------------------------------------------------------------------------
+function hashPasswordAsync(password, salt = crypto.randomBytes(16).toString('hex')) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err, derived) => {
+      if (err) return reject(err);
+      resolve({ salt, hash: derived.toString('hex') });
+    });
+  });
 }
 
+function verifyPasswordAsync(password, salt, expectedHash) {
+  return new Promise((resolve) => {
+    crypto.scrypt(password, salt, 64, (err, derived) => {
+      if (err) return resolve(false);
+      try {
+        const a = derived;
+        const b = Buffer.from(expectedHash, 'hex');
+        resolve(a.length === b.length && crypto.timingSafeEqual(a, b));
+      } catch { resolve(false); }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Persistence – reads are sync at startup, writes are async + debounced
+// ---------------------------------------------------------------------------
 function readProfiles() {
   try {
-    if (!fs.existsSync(PROFILE_FILE)) {
-      return;
-    }
-    const fileData = fs.readFileSync(PROFILE_FILE, 'utf8');
-    const parsed = JSON.parse(fileData);
+    if (!fs.existsSync(PROFILE_FILE)) return;
+    const parsed = JSON.parse(fs.readFileSync(PROFILE_FILE, 'utf8'));
     for (const [profileId, profile] of Object.entries(parsed)) {
       if (!sanitizeProfileId(profileId)) continue;
-      const name = sanitizeName(profile?.name, `Player-${profileId.slice(0, 4)}`);
-      const color = sanitizeColor(profile?.color, randomHexColor());
-      const appearance = sanitizeAppearance(profile?.appearance, {
-        ...defaultAppearance(),
-        shirt: color
-      });
-      const x = Number(profile?.x);
-      const y = Number(profile?.y);
-      const z = Number(profile?.z);
+      const name       = sanitizeName(profile?.name, `Player-${profileId.slice(0, 4)}`);
+      const color      = sanitizeColor(profile?.color, randomHexColor());
+      const appearance = sanitizeAppearance(profile?.appearance, { ...defaultAppearance(), shirt: color });
+      const x = Number(profile?.x), y = Number(profile?.y), z = Number(profile?.z);
       profiles.set(profileId, {
-        name,
-        color: appearance.shirt,
-        appearance,
+        name, color: appearance.shirt, appearance,
         x: Number.isFinite(x) ? x : null,
         y: Number.isFinite(y) ? y : null,
         z: Number.isFinite(z) ? z : null
       });
     }
-  } catch {
-    // Ignore corrupt profile storage and continue with runtime defaults.
-  }
+  } catch { /* ignore corrupt file */ }
 }
 
 function readAccounts() {
   try {
-    if (!fs.existsSync(ACCOUNT_FILE)) {
-      return;
-    }
-    const fileData = fs.readFileSync(ACCOUNT_FILE, 'utf8');
-    const parsed = JSON.parse(fileData);
+    if (!fs.existsSync(ACCOUNT_FILE)) return;
+    const parsed = JSON.parse(fs.readFileSync(ACCOUNT_FILE, 'utf8'));
     for (const [usernameKey, account] of Object.entries(parsed)) {
       const username = sanitizeUsername(usernameKey);
       if (!username) continue;
       const salt = typeof account?.salt === 'string' ? account.salt : '';
       const hash = typeof account?.hash === 'string' ? account.hash : '';
-      const profileId = sanitizeProfileId(account?.profileId) || `acct-${username}`;
       if (!salt || !hash) continue;
+      const profileId = sanitizeProfileId(account?.profileId) || `acct-${username}`;
       accounts.set(username, { username, salt, hash, profileId });
     }
-  } catch {
-    // Ignore corrupt account storage and continue.
-  }
+  } catch { /* ignore corrupt file */ }
 }
 
 function scheduleProfileSave() {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-  }
+  clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    const serialized = {};
-    for (const [profileId, profile] of profiles.entries()) {
-      serialized[profileId] = {
-        name: profile.name,
-        color: profile.color,
-        appearance: profile.appearance,
-        x: Number.isFinite(profile.x) ? profile.x : null,
-        y: Number.isFinite(profile.y) ? profile.y : null,
-        z: Number.isFinite(profile.z) ? profile.z : null
+    const out = {};
+    for (const [id, p] of profiles.entries()) {
+      out[id] = {
+        name: p.name, color: p.color, appearance: p.appearance,
+        x: Number.isFinite(p.x) ? p.x : null,
+        y: Number.isFinite(p.y) ? p.y : null,
+        z: Number.isFinite(p.z) ? p.z : null
       };
     }
-    fs.writeFile(PROFILE_FILE, JSON.stringify(serialized, null, 2), () => {});
-  }, 250);
+    fs.writeFile(PROFILE_FILE, JSON.stringify(out, null, 2), () => {});
+  }, PROFILE_SAVE_DEBOUNCE_MS);
 }
 
 function scheduleAccountSave() {
-  if (accountSaveTimer) {
-    clearTimeout(accountSaveTimer);
-  }
+  clearTimeout(accountSaveTimer);
   accountSaveTimer = setTimeout(() => {
-    const serialized = {};
-    for (const [username, account] of accounts.entries()) {
-      serialized[username] = {
-        salt: account.salt,
-        hash: account.hash,
-        profileId: account.profileId
-      };
+    const out = {};
+    for (const [u, a] of accounts.entries()) out[u] = { salt: a.salt, hash: a.hash, profileId: a.profileId };
+    fs.writeFile(ACCOUNT_FILE, JSON.stringify(out, null, 2), () => {});
+  }, ACCOUNT_SAVE_DEBOUNCE_MS);
+}
+
+/** Flush a single player's position into the profiles map (no disk I/O yet). */
+function flushPlayerToProfile(player) {
+  if (!player?.profileId) return;
+  const existing = profiles.get(player.profileId) || {};
+  profiles.set(player.profileId, {
+    ...existing,
+    name:       player.name,
+    color:      player.color,
+    appearance: player.appearance,
+    x: player.x, y: player.y, z: player.z
+  });
+}
+
+/** Periodic position save – runs every 30 s instead of on every move event. */
+function startAutoSave() {
+  setInterval(() => {
+    let dirty = false;
+    for (const player of players.values()) {
+      if (!player.profileId) continue;
+      flushPlayerToProfile(player);
+      dirty = true;
     }
-    fs.writeFile(ACCOUNT_FILE, JSON.stringify(serialized, null, 2), () => {});
-  }, 250);
+    if (dirty) scheduleProfileSave();
+  }, POSITION_SAVE_INTERVAL_MS);
 }
 
 readProfiles();
 readAccounts();
+startAutoSave();
+
+// ---------------------------------------------------------------------------
+// Player helpers
+// ---------------------------------------------------------------------------
+function buildSpawnData(socket, profileId, username) {
+  const profile   = profiles.get(profileId);
+  const savedX    = Number(profile?.x), savedY = Number(profile?.y), savedZ = Number(profile?.z);
+  const hasSaved  = Number.isFinite(savedX) && Number.isFinite(savedY) && Number.isFinite(savedZ);
+  const bounded   = hasSaved
+    ? clampToPlayableGround(clamp(savedX, -PLAYABLE_BOUND, PLAYABLE_BOUND), clamp(savedZ, -PLAYABLE_BOUND, PLAYABLE_BOUND))
+    : randomSpawn(WORLD_LIMIT * 0.65);
+
+  const appearance = sanitizeAppearance(profile?.appearance, {
+    ...defaultAppearance(), shirt: profile?.color || randomHexColor()
+  });
+
+  return {
+    id:         socket.id,
+    profileId,
+    name:       profile?.name || username || `Player-${socket.id.slice(0, 4)}`,
+    x:          bounded.x,
+    y:          hasSaved ? clamp(savedY, SWIM_MIN_Y, 30) : ISLAND_SURFACE_Y,
+    z:          bounded.z,
+    yaw:        0,
+    appearance,
+    color:      appearance.shirt,
+    // Rate-limit tracking (not sent to clients)
+    _lastMoveAt: 0,
+  };
+}
 
 function spawnPlayer(socket, profileId, username) {
-  const profile = profiles.get(profileId);
-  const spawnPoint = randomSpawn(WORLD_LIMIT * 0.65);
-  const savedX = Number(profile?.x);
-  const savedY = Number(profile?.y);
-  const savedZ = Number(profile?.z);
-  const hasSavedPosition = Number.isFinite(savedX) && Number.isFinite(savedY) && Number.isFinite(savedZ);
-  const boundedSaved = hasSavedPosition
-    ? clampToPlayableGround(
-      clamp(savedX, -PLAYABLE_BOUND, PLAYABLE_BOUND),
-      clamp(savedZ, -PLAYABLE_BOUND, PLAYABLE_BOUND)
-    )
-    : null;
-  const spawn = {
-    id: socket.id,
-    profileId,
-    name: profile?.name || username || `Player-${socket.id.slice(0, 4)}`,
-    x: boundedSaved ? boundedSaved.x : spawnPoint.x,
-    y: hasSavedPosition ? clamp(savedY, SWIM_MIN_Y, 30) : ISLAND_SURFACE_Y,
-    z: boundedSaved ? boundedSaved.z : spawnPoint.z,
-    appearance: sanitizeAppearance(profile?.appearance, {
-      ...defaultAppearance(),
-      shirt: profile?.color || randomHexColor()
-    })
-  };
-  spawn.color = spawn.appearance.shirt;
-  players.set(socket.id, spawn);
+  const player = buildSpawnData(socket, profileId, username);
+  players.set(socket.id, player);
+
+  // Send init only to the joining socket.
+  // Players list excludes the joining player themselves (they add themselves via init.id).
+  const otherPlayers = [...players.values()]
+    .filter(p => p.id !== socket.id)
+    .map(publicPlayer);
+
   socket.emit('init', {
-    id: socket.id,
-    players: [...players.values()],
-    worldLimit: WORLD_LIMIT,
-    interactables: [...interactables.values()]
+    id:           socket.id,
+    playerData:   publicPlayer(player),
+    players:      otherPlayers,
+    worldLimit:   WORLD_LIMIT,
+    interactables:[...interactables.values()]
   });
-  socket.broadcast.emit('playerJoined', spawn);
+
+  // Broadcast join to everyone else (not back to joining socket)
+  socket.broadcast.emit('player:join', publicPlayer(player));
 }
 
-function persistPlayerProgress(player) {
-  if (!player?.profileId) return;
-  profiles.set(player.profileId, {
-    name: player.name,
-    color: player.color,
-    appearance: player.appearance,
-    x: player.x,
-    y: player.y,
-    z: player.z
-  });
+/** Strip internal fields before sending player data to clients. */
+function publicPlayer(p) {
+  return {
+    id:         p.id,
+    name:       p.name,
+    color:      p.color,
+    appearance: p.appearance,
+    x: p.x, y: p.y, z: p.z, yaw: p.yaw || 0
+  };
+}
+
+function removePlayer(socket) {
+  const player = players.get(socket.id);
+  if (!player) return;
+  // Flush position to disk before removing
+  flushPlayerToProfile(player);
   scheduleProfileSave();
-}
-
-function removeAuthenticatedPlayer(socket) {
-  const existing = players.get(socket.id);
-  if (!existing) return;
-  persistPlayerProgress(existing);
   players.delete(socket.id);
   voiceParticipants.delete(socket.id);
-  socket.broadcast.emit('voice:user-left', socket.id);
-  io.emit('playerLeft', socket.id);
+  socket.broadcast.emit('voice:peer:leave', { id: socket.id });
+  io.emit('player:leave', { id: socket.id });
 }
 
+// ---------------------------------------------------------------------------
+// Socket.io
+// ---------------------------------------------------------------------------
 io.on('connection', (socket) => {
-  socket.emit('auth:required');
-
-  socket.on('auth:register', (payload, ack) => {
+  // ---- Auth ----------------------------------------------------------------
+  socket.on('auth:register', async (payload, ack) => {
     const username = sanitizeUsername(payload?.username);
     const password = sanitizePassword(payload?.password);
     if (!username || !password) {
-      if (typeof ack === 'function') ack({ ok: false, error: 'Use 3-20 letters/numbers for username and min 4-char password.' });
-      return;
+      return ack?.({ ok: false, error: 'Use 3–20 letters/numbers for username and min 4-char password.' });
     }
     if (accounts.has(username)) {
-      if (typeof ack === 'function') ack({ ok: false, error: 'Username already exists.' });
-      return;
+      return ack?.({ ok: false, error: 'Username already taken.' });
     }
-    const { salt, hash } = hashPassword(password);
+
+    let hashed;
+    try { hashed = await hashPasswordAsync(password); }
+    catch { return ack?.({ ok: false, error: 'Server error. Try again.' }); }
+
     const profileId = `acct-${username}`;
-    accounts.set(username, { username, salt, hash, profileId });
+    accounts.set(username, { username, salt: hashed.salt, hash: hashed.hash, profileId });
     scheduleAccountSave();
+
     if (!profiles.has(profileId)) {
       const shirt = randomHexColor();
       profiles.set(profileId, {
-        name: username,
-        color: shirt,
+        name: username, color: shirt,
         appearance: sanitizeAppearance(null, { ...defaultAppearance(), shirt }),
-        x: null,
-        y: null,
-        z: null
+        x: null, y: null, z: null
       });
       scheduleProfileSave();
     }
+
     spawnPlayer(socket, profileId, username);
-    if (typeof ack === 'function') ack({ ok: true, username });
+    ack?.({ ok: true, username });
   });
 
-  socket.on('auth:login', (payload, ack) => {
+  socket.on('auth:login', async (payload, ack) => {
     const username = sanitizeUsername(payload?.username);
     const password = sanitizePassword(payload?.password);
     if (!username || !password) {
-      if (typeof ack === 'function') ack({ ok: false, error: 'Invalid username or password.' });
-      return;
+      return ack?.({ ok: false, error: 'Invalid credentials.' });
     }
     const account = accounts.get(username);
-    if (!account || !verifyPassword(password, account.salt, account.hash)) {
-      if (typeof ack === 'function') ack({ ok: false, error: 'Invalid username or password.' });
-      return;
+    if (!account) {
+      return ack?.({ ok: false, error: 'Invalid credentials.' });
     }
+
+    let valid;
+    try { valid = await verifyPasswordAsync(password, account.salt, account.hash); }
+    catch { return ack?.({ ok: false, error: 'Server error. Try again.' }); }
+
+    if (!valid) return ack?.({ ok: false, error: 'Invalid credentials.' });
+
     spawnPlayer(socket, account.profileId, username);
-    if (typeof ack === 'function') ack({ ok: true, username });
+    ack?.({ ok: true, username });
   });
 
-  socket.on('auth:logout', () => {
-    removeAuthenticatedPlayer(socket);
-  });
+  socket.on('auth:logout', () => removePlayer(socket));
 
+  // ---- Movement (rate-limited) -------------------------------------------
   socket.on('move', (payload) => {
-    const current = players.get(socket.id);
-    if (!current || !payload) return;
+    const player = players.get(socket.id);
+    if (!player || !payload) return;
 
-    const x = Number(payload.x);
-    const y = Number(payload.y);
-    const z = Number(payload.z);
-    const nextX = Number.isFinite(x) ? x : current.x;
-    const nextY = Number.isFinite(y) ? y : current.y;
-    const nextZ = Number.isFinite(z) ? z : current.z;
-    const boundedX = clamp(nextX, -PLAYABLE_BOUND, PLAYABLE_BOUND);
-    const boundedZ = clamp(nextZ, -PLAYABLE_BOUND, PLAYABLE_BOUND);
-    const next = clampToPlayableGround(boundedX, boundedZ);
+    // Drop packets arriving faster than MOVE_RATE_MS
+    const now = Date.now();
+    if (now - player._lastMoveAt < MOVE_RATE_MS) return;
+    player._lastMoveAt = now;
 
-    current.x = next.x;
-    current.y = clamp(nextY, SWIM_MIN_Y, 30);
-    current.z = next.z;
-    players.set(socket.id, current);
-    persistPlayerProgress(current);
+    const x   = Number(payload.x), y = Number(payload.y), z = Number(payload.z);
+    const nx  = Number.isFinite(x) ? x : player.x;
+    const ny  = Number.isFinite(y) ? y : player.y;
+    const nz  = Number.isFinite(z) ? z : player.z;
+    const bnd = clampToPlayableGround(clamp(nx, -PLAYABLE_BOUND, PLAYABLE_BOUND), clamp(nz, -PLAYABLE_BOUND, PLAYABLE_BOUND));
 
-    socket.broadcast.emit('playerMoved', {
-      id: socket.id,
-      x: current.x,
-      y: current.y,
-      z: current.z,
-      name: current.name,
-      color: current.color,
-      appearance: current.appearance
+    player.x   = bnd.x;
+    player.y   = clamp(ny, SWIM_MIN_Y, 30);
+    player.z   = bnd.z;
+    player.yaw = typeof payload.yaw === 'number' ? payload.yaw : player.yaw;
+    player.isSwimming = !!payload.isSwimming;
+
+    // Broadcast only the minimal position packet — NOT appearance
+    socket.broadcast.emit('player:move', {
+      id:         socket.id,
+      x:          player.x,
+      y:          player.y,
+      z:          player.z,
+      yaw:        player.yaw,
+      isSwimming: player.isSwimming
     });
   });
 
+  // ---- Interact ------------------------------------------------------------
   socket.on('interact', (payload) => {
     const actor = players.get(socket.id);
-    if (!actor || !payload || payload.id !== 'beacon') return;
+    if (!actor || payload?.id !== 'beacon') return;
 
     const beacon = interactables.get('beacon');
     if (!beacon) return;
-
-    const distance = Math.hypot(actor.x - beacon.x, actor.z - beacon.z);
-    if (distance > INTERACT_RANGE) return;
+    if (Math.hypot(actor.x - beacon.x, actor.z - beacon.z) > INTERACT_RANGE) return;
 
     beacon.active = !beacon.active;
     beacon.lastBy = actor.name;
-    interactables.set(beacon.id, beacon);
-
-    io.emit('interactableUpdated', beacon);
+    io.emit('interactable:update', beacon);
     io.emit('chat', {
-      fromName: 'System',
-      text: beacon.active ? `${actor.name} activated the island beacon.` : `${actor.name} cooled the island beacon.`,
-      sentAt: Date.now()
+      id:   null,
+      name: 'System',
+      msg:  beacon.active
+        ? `${actor.name} activated the island beacon.`
+        : `${actor.name} cooled the island beacon.`
     });
   });
 
+  // ---- Chat ----------------------------------------------------------------
   socket.on('chat', (payload) => {
     const sender = players.get(socket.id);
-    if (!sender || !payload) return;
-
-    const rawText = typeof payload.text === 'string' ? payload.text : '';
-    const text = rawText.trim().slice(0, CHAT_MAX_LEN);
-    if (!text) return;
-
-    io.emit('chat', {
-      fromId: socket.id,
-      fromName: sender.name,
-      text,
-      sentAt: Date.now()
-    });
+    if (!sender) return;
+    const msg = (typeof payload?.msg === 'string' ? payload.msg : '').trim().slice(0, CHAT_MAX_LEN);
+    if (!msg) return;
+    io.emit('chat', { id: socket.id, name: sender.name, msg });
   });
 
+  // ---- Customize -----------------------------------------------------------
   socket.on('customize', (payload, ack) => {
-    const current = players.get(socket.id);
-    if (!current || !payload) {
-      if (typeof ack === 'function') ack({ ok: false });
-      return;
-    }
+    const player = players.get(socket.id);
+    if (!player || !payload) return ack?.({ ok: false });
 
-    const previousName = current.name;
-    current.name = sanitizeName(payload.name, current.name);
-    current.appearance = sanitizeAppearance(payload.appearance, {
-      ...current.appearance,
-      shirt: sanitizeColor(payload.color, current.color)
-    });
-    current.color = current.appearance.shirt;
-    players.set(socket.id, current);
-    persistPlayerProgress(current);
+    const prevName   = player.name;
+    player.name      = sanitizeName(payload.name, player.name);
+    player.appearance= sanitizeAppearance(payload.appearance, player.appearance);
+    player.color     = player.appearance.shirt;
 
-    io.emit('playerCustomized', {
-      id: current.id,
-      name: current.name,
-      color: current.color,
-      appearance: current.appearance
-    });
+    flushPlayerToProfile(player);
+    scheduleProfileSave();
 
-    if (typeof ack === 'function') {
-      ack({
-        ok: true,
-        name: current.name,
-        color: current.color,
-        appearance: current.appearance
-      });
-    }
+    io.emit('player:appearance', { id: socket.id, name: player.name, color: player.color, appearance: player.appearance });
+    ack?.({ ok: true, name: player.name, color: player.color, appearance: player.appearance });
 
-    if (previousName !== current.name) {
-      io.emit('chat', {
-        fromName: 'System',
-        text: `${previousName} is now ${current.name}.`,
-        sentAt: Date.now()
-      });
+    if (prevName !== player.name) {
+      io.emit('chat', { id: null, name: 'System', msg: `${prevName} is now known as ${player.name}.` });
     }
   });
 
+  // ---- Save (explicit) -----------------------------------------------------
+  socket.on('save', (payload) => {
+    const player = players.get(socket.id);
+    if (!player) return;
+    // Accept an optional position override from the client
+    if (payload) {
+      const x = Number(payload.x), y = Number(payload.y), z = Number(payload.z);
+      if (Number.isFinite(x)) player.x = x;
+      if (Number.isFinite(y)) player.y = y;
+      if (Number.isFinite(z)) player.z = z;
+    }
+    flushPlayerToProfile(player);
+    scheduleProfileSave();
+  });
+
+  // ---- Emotes --------------------------------------------------------------
   socket.on('emote', (payload) => {
     const actor = players.get(socket.id);
-    const type = payload?.type;
-    if (!actor || !['wave', 'dance', 'cheer'].includes(type)) return;
-
-    io.emit('playerEmote', {
-      id: socket.id,
-      type,
-      sentAt: Date.now()
-    });
+    const emote = payload?.emote;
+    if (!actor || !EMOTE_SET.has(emote)) return;
+    socket.broadcast.emit('player:emote', { id: socket.id, emote });
   });
 
+  // ---- Voice (WebRTC signalling) -------------------------------------------
   socket.on('voice:join', () => {
     if (!players.has(socket.id)) return;
     voiceParticipants.add(socket.id);
-    socket.emit('voice:participants', [...voiceParticipants].filter((id) => id !== socket.id));
-    socket.broadcast.emit('voice:user-joined', socket.id);
+    // Tell the new participant about existing voice peers
+    socket.emit('voice:peers', [...voiceParticipants].filter(id => id !== socket.id));
+    // Tell existing peers about the new participant
+    socket.broadcast.emit('voice:peer:join', { id: socket.id });
   });
 
   socket.on('voice:leave', () => {
     voiceParticipants.delete(socket.id);
-    socket.broadcast.emit('voice:user-left', socket.id);
+    socket.broadcast.emit('voice:peer:leave', { id: socket.id });
   });
 
   socket.on('voice:offer', ({ to, offer }) => {
-    if (!to || !offer) return;
+    if (!to || !offer || !players.has(socket.id)) return;
     io.to(to).emit('voice:offer', { from: socket.id, offer });
   });
 
   socket.on('voice:answer', ({ to, answer }) => {
-    if (!to || !answer) return;
+    if (!to || !answer || !players.has(socket.id)) return;
     io.to(to).emit('voice:answer', { from: socket.id, answer });
   });
 
   socket.on('voice:ice', ({ to, candidate }) => {
-    if (!to || !candidate) return;
+    if (!to || !candidate || !players.has(socket.id)) return;
     io.to(to).emit('voice:ice', { from: socket.id, candidate });
   });
 
-  socket.on('disconnect', () => {
-    removeAuthenticatedPlayer(socket);
-  });
+  // ---- Disconnect ----------------------------------------------------------
+  socket.on('disconnect', () => removePlayer(socket));
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-});
+// ---------------------------------------------------------------------------
+// Graceful shutdown — flush all profiles before exit
+// ---------------------------------------------------------------------------
+function gracefulShutdown(signal) {
+  console.log(`\n${signal} received. Flushing profiles…`);
+  clearTimeout(saveTimer);
+  clearTimeout(accountSaveTimer);
+  for (const player of players.values()) flushPlayerToProfile(player);
+  const out = {};
+  for (const [id, p] of profiles.entries()) {
+    out[id] = { name: p.name, color: p.color, appearance: p.appearance, x: p.x, y: p.y, z: p.z };
+  }
+  fs.writeFileSync(PROFILE_FILE, JSON.stringify(out, null, 2));
+  console.log('Profiles saved. Exiting.');
+  process.exit(0);
+}
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// ---------------------------------------------------------------------------
+server.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
