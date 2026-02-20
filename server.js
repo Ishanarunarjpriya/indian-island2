@@ -27,6 +27,23 @@ const PLAYABLE_BOUND = WORLD_LIMIT * 4.1;
 const INTERACT_RANGE = 4;
 const CHAT_MAX_LEN = 220;
 const NAME_MAX_LEN = 18;
+const CHAT_FILTER_WORDS = [
+  'fuck',
+  'fucking',
+  'shit',
+  'bitch',
+  'asshole',
+  'bastard',
+  'dick',
+  'pussy',
+  'cunt',
+  'nigger',
+  'nigga',
+  'whore',
+  'slut',
+  'rape',
+  'retard'
+];
 const HAIR_STYLES = new Set(['none', 'short', 'sidepart', 'spiky', 'long', 'ponytail', 'bob', 'wavy']);
 const FACE_STYLES = new Set(['smile', 'serious', 'grin', 'wink', 'lashessmile', 'soft']);
 const ACCESSORY_TYPES = new Set(['hat', 'glasses', 'backpack']);
@@ -193,6 +210,16 @@ function sanitizePassword(value) {
   return raw.length >= 4 && raw.length <= 80 ? raw : null;
 }
 
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const chatFilterPattern = new RegExp(`\\b(${CHAT_FILTER_WORDS.map(escapeRegex).join('|')})\\b`, 'gi');
+
+function filterChatText(text) {
+  return String(text).replace(chatFilterPattern, (word) => '#'.repeat(word.length));
+}
+
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   return { salt, hash };
@@ -302,7 +329,22 @@ function scheduleAccountSave() {
 readProfiles();
 readAccounts();
 
+function ensureProfileExists(profileId, username) {
+  if (!profileId || profiles.has(profileId)) return;
+  const shirt = randomHexColor();
+  profiles.set(profileId, {
+    name: sanitizeName(username, username || `Player-${profileId.slice(0, 4)}`),
+    color: shirt,
+    appearance: sanitizeAppearance(null, { ...defaultAppearance(), shirt }),
+    x: null,
+    y: null,
+    z: null
+  });
+  scheduleProfileSave();
+}
+
 function spawnPlayer(socket, profileId, username) {
+  ensureProfileExists(profileId, username);
   const profile = profiles.get(profileId);
   const spawnPoint = randomSpawn(WORLD_LIMIT * 0.65);
   const savedX = Number(profile?.x);
@@ -379,18 +421,7 @@ io.on('connection', (socket) => {
     const profileId = `acct-${username}`;
     accounts.set(username, { username, salt, hash, profileId });
     scheduleAccountSave();
-    if (!profiles.has(profileId)) {
-      const shirt = randomHexColor();
-      profiles.set(profileId, {
-        name: username,
-        color: shirt,
-        appearance: sanitizeAppearance(null, { ...defaultAppearance(), shirt }),
-        x: null,
-        y: null,
-        z: null
-      });
-      scheduleProfileSave();
-    }
+    ensureProfileExists(profileId, username);
     spawnPlayer(socket, profileId, username);
     if (typeof ack === 'function') ack({ ok: true, username });
   });
@@ -407,6 +438,7 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ ok: false, error: 'Invalid username or password.' });
       return;
     }
+    ensureProfileExists(account.profileId, username);
     spawnPlayer(socket, account.profileId, username);
     if (typeof ack === 'function') ack({ ok: true, username });
   });
@@ -473,7 +505,7 @@ io.on('connection', (socket) => {
     if (!sender || !payload) return;
 
     const rawText = typeof payload.text === 'string' ? payload.text : '';
-    const text = rawText.trim().slice(0, CHAT_MAX_LEN);
+    const text = filterChatText(rawText.trim().slice(0, CHAT_MAX_LEN));
     if (!text) return;
 
     io.emit('chat', {
