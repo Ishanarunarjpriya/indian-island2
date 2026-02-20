@@ -75,7 +75,7 @@
       #hud {
         position: fixed;
         left: 16px;
-        top: 16px;
+        top: 74px;
         z-index: 10;
         padding: 12px 14px;
         min-width: 240px;
@@ -125,19 +125,34 @@
         display: none !important;
       }
 
-      #menu-toggle {
+      #top-left-toolbar {
         position: fixed;
-        right: 16px;
+        left: 16px;
         top: 16px;
         z-index: 21;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+      }
+
+      .toolbar-btn {
         width: 44px;
         height: 44px;
         border-radius: 10px;
         padding: 0;
-        background: rgba(16, 24, 32, 0.86);
-        border: 1px solid rgba(255, 255, 255, 0.22);
         display: grid;
         place-items: center;
+        font-size: 18px;
+        line-height: 1;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(16, 24, 32, 0.86);
+        color: #f8fafc;
+      }
+
+      #menu-toggle {
+        width: 44px;
+        height: 44px;
       }
 
       #menu-toggle .line-stack {
@@ -680,9 +695,14 @@
       <span id="time-label">Morning</span> | <span id="weather-label">Clear</span>
     </div>
 
-    <button id="menu-toggle" type="button" aria-label="Open menu">
-      <span class="line-stack"><span></span><span></span><span></span></span>
-    </button>
+    <div id="top-left-toolbar" class="panel">
+      <button id="menu-toggle" class="toolbar-btn" type="button" aria-label="Open menu">
+        <span class="line-stack"><span></span><span></span><span></span></span>
+      </button>
+      <button id="chat-toggle" class="toolbar-btn" type="button" aria-label="Open chat">💬</button>
+      <button id="voice-quick-toggle" class="toolbar-btn" type="button" aria-label="Voice chat / mute">🎙️</button>
+      <button id="fullscreen-toggle" class="toolbar-btn" type="button" aria-label="Enter fullscreen">⛶</button>
+    </div>
 
     <div id="menu-overlay" class="hidden">
       <section id="menu-panel" class="panel">
@@ -836,13 +856,14 @@
               <button class="item-card" type="button" data-type="accessory" data-value="glasses">Glasses</button>
               <button class="item-card" type="button" data-type="accessory" data-value="backpack">Backpack</button>
             </div>
+            <button id="customize-apply" type="submit">Apply Outfit</button>
             <div class="section-title">Outfits</div>
             <div class="outfit-grid">
               <button class="outfit-btn" type="button" data-outfit-save="1">Save Slot 1</button>
-              <button class="outfit-btn" type="button" data-outfit-load="1">Load Slot 1</button>
               <button class="outfit-btn" type="button" data-outfit-save="2">Save Slot 2</button>
-              <button class="outfit-btn" type="button" data-outfit-load="2">Load Slot 2</button>
               <button class="outfit-btn" type="button" data-outfit-save="3">Save Slot 3</button>
+              <button class="outfit-btn" type="button" data-outfit-load="1">Load Slot 1</button>
+              <button class="outfit-btn" type="button" data-outfit-load="2">Load Slot 2</button>
               <button class="outfit-btn" type="button" data-outfit-load="3">Load Slot 3</button>
             </div>
             <select id="face-style-input" hidden>
@@ -853,7 +874,6 @@
               <option value="lashessmile">Lashes Smile</option>
               <option value="soft">Soft</option>
             </select>
-            <button id="customize-apply" type="submit">Apply</button>
           </form>
         </div>
         <div id="customize-status">No changes yet.</div>

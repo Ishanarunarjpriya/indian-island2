@@ -27,6 +27,7 @@ const minimapCtx = minimapEl.getContext('2d');
 const chatLogEl = document.getElementById('chat-log');
 const chatFormEl = document.getElementById('chat-form');
 const chatInputEl = document.getElementById('chat-input');
+const chatPanelEl = document.getElementById('chat-panel');
 const customizeFormEl = document.getElementById('customize-form');
 const nameInputEl = document.getElementById('name-input');
 const skinInputEl = document.getElementById('skin-input');
@@ -47,6 +48,9 @@ const outfitLoadButtons = Array.from(document.querySelectorAll('[data-outfit-loa
 const staminaFillEl = document.getElementById('stamina-fill');
 const voiceToggleEl = document.getElementById('voice-toggle');
 const menuToggleEl = document.getElementById('menu-toggle');
+const chatToggleEl = document.getElementById('chat-toggle');
+const voiceQuickToggleEl = document.getElementById('voice-quick-toggle');
+const fullscreenToggleEl = document.getElementById('fullscreen-toggle');
 const menuOverlayEl = document.getElementById('menu-overlay');
 const saveQuitEl = document.getElementById('save-quit');
 const authModalEl = document.getElementById('auth-modal');
@@ -59,7 +63,7 @@ const emoteWheelEl = document.getElementById('emote-wheel');
 const wheelButtons = Array.from(document.querySelectorAll('[data-wheel-emote]'));
 const nameTagsEl = document.getElementById('name-tags');
 const emoteButtons = Array.from(document.querySelectorAll('[data-emote]'));
-const gameplayPanels = ['hud', 'mini-panel', 'action-panel', 'chat-panel', 'world-state']
+const gameplayPanels = ['hud', 'mini-panel', 'action-panel', 'chat-panel', 'world-state', 'top-left-toolbar']
   .map((id) => document.getElementById(id))
   .filter(Boolean);
 
@@ -148,7 +152,104 @@ function setGameplayVisible(visible) {
   gameplayPanels.forEach((panel) => {
     panel.style.display = visible ? '' : 'none';
   });
-  if (menuToggleEl) menuToggleEl.style.display = visible ? '' : 'none';
+}
+
+let voiceEnabled = false;
+let voiceMuted = false;
+let chatPanelOpen = true;
+let pointerLocked = false;
+
+function setChatPanelOpen(open) {
+  chatPanelOpen = Boolean(open);
+  chatPanelEl?.classList.toggle('hidden', !chatPanelOpen);
+  if (chatToggleEl) {
+    chatToggleEl.style.filter = chatPanelOpen ? 'none' : 'grayscale(0.95) brightness(0.75)';
+    chatToggleEl.title = chatPanelOpen ? 'Hide chat' : 'Open chat';
+  }
+}
+
+function updateVoiceButtonLabels() {
+  if (voiceQuickToggleEl) {
+    if (!voiceEnabled) {
+      voiceQuickToggleEl.textContent = '🎙️';
+      voiceQuickToggleEl.title = 'Enable voice chat';
+      voiceQuickToggleEl.style.filter = 'grayscale(0.95) brightness(0.75)';
+    } else if (voiceMuted) {
+      voiceQuickToggleEl.textContent = '🔇';
+      voiceQuickToggleEl.title = 'Unmute microphone';
+      voiceQuickToggleEl.style.filter = 'none';
+    } else {
+      voiceQuickToggleEl.textContent = '🎙️';
+      voiceQuickToggleEl.title = 'Mute microphone';
+      voiceQuickToggleEl.style.filter = 'none';
+    }
+  }
+  if (voiceToggleEl) {
+    if (!voiceEnabled) {
+      voiceToggleEl.textContent = 'Enable Proximity Voice';
+    } else if (voiceMuted) {
+      voiceToggleEl.textContent = 'Unmute Mic (Voice On)';
+    } else {
+      voiceToggleEl.textContent = 'Mute Mic (Voice On)';
+    }
+  }
+}
+
+async function setVoiceMuted(muted) {
+  voiceMuted = Boolean(muted);
+  if (voiceMuted) {
+    if (localVoiceStream) {
+      localVoiceStream.getTracks().forEach((track) => track.stop());
+      localVoiceStream = null;
+    }
+    voicePeers.forEach((pc) => {
+      pc.getSenders().forEach((sender) => {
+        if (sender.track?.kind === 'audio' || sender.track === null) {
+          sender.replaceTrack(null).catch(() => {});
+        }
+      });
+    });
+    updateVoiceButtonLabels();
+    return;
+  }
+
+  if (!voiceEnabled) {
+    updateVoiceButtonLabels();
+    return;
+  }
+
+  if (!localVoiceStream) {
+    try {
+      localVoiceStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+    } catch {
+      voiceMuted = true;
+      if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        if (voiceToggleEl) voiceToggleEl.textContent = 'Voice needs HTTPS';
+      } else if (voiceToggleEl) {
+        voiceToggleEl.textContent = 'Mic blocked';
+      }
+      updateVoiceButtonLabels();
+      return;
+    }
+  }
+
+  const track = localVoiceStream.getAudioTracks()[0];
+  if (track) {
+    voicePeers.forEach((pc) => {
+      pc.getSenders().forEach((sender) => {
+        if (sender.track?.kind === 'audio' || sender.track === null) {
+          sender.replaceTrack(track).catch(() => {});
+        }
+      });
+    });
+  }
+  updateVoiceButtonLabels();
 }
 
 function clearSessionWorld() {
@@ -165,6 +266,9 @@ function setAuthModalOpen(open, statusText = '') {
   isAuthenticated = !open;
   setGameplayVisible(!open);
   if (open) {
+    if (document.pointerLockElement) {
+      document.exitPointerLock?.();
+    }
     keys.clear();
     pendingJump = false;
     emoteWheelOpen = false;
@@ -189,6 +293,8 @@ function setMenuOpen(open) {
 }
 
 setAuthModalOpen(true, 'Login or create an account to continue.');
+setChatPanelOpen(true);
+updateVoiceButtonLabels();
 
 const joystickEl = document.getElementById('joystick');
 const joystickStickEl = document.getElementById('joystick-stick');
@@ -196,7 +302,6 @@ const mobileJumpEl = document.getElementById('btn-jump');
 const mobileUseEl = document.getElementById('btn-use');
 const mobileEmoteEl = document.getElementById('btn-emote');
 
-let voiceEnabled = false;
 let localVoiceStream = null;
 const voicePeers = new Map();
 const voiceAudioEls = new Map();
@@ -206,7 +311,7 @@ const VOICE_ICE_SERVERS = [
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' }
 ];
-const VOICE_RADIUS = 22;
+const VOICE_RADIUS = 40;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0xb7d7e6, 45, 160);
@@ -220,6 +325,59 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 document.body.appendChild(renderer.domElement);
 renderer.domElement.style.touchAction = 'none';
+
+function updateFullscreenButtonLabel() {
+  if (!fullscreenToggleEl) return;
+  const active = Boolean(document.fullscreenElement);
+  fullscreenToggleEl.textContent = active ? '🡼' : '⛶';
+  fullscreenToggleEl.title = active ? 'Exit fullscreen' : 'Enter fullscreen';
+}
+
+async function requestPointerLockForGameplay() {
+  if (!isAuthenticated || document.pointerLockElement === renderer.domElement) return;
+  try {
+    const result = renderer.domElement.requestPointerLock?.();
+    if (result?.catch) await result;
+  } catch {}
+}
+
+async function toggleFullscreenPointerLock() {
+  if (!isAuthenticated) return;
+  if (!document.fullscreenElement) {
+    try {
+      const fsResult = document.documentElement.requestFullscreen?.();
+      if (fsResult?.catch) await fsResult;
+    } catch {
+      return;
+    }
+    updateFullscreenButtonLabel();
+    await requestPointerLockForGameplay();
+    return;
+  }
+  if (document.pointerLockElement === renderer.domElement) {
+    document.exitPointerLock?.();
+  }
+  try {
+    const exitResult = document.exitFullscreen?.();
+    if (exitResult?.catch) await exitResult;
+  } catch {}
+  updateFullscreenButtonLabel();
+}
+
+document.addEventListener('fullscreenchange', async () => {
+  updateFullscreenButtonLabel();
+  if (document.fullscreenElement && isAuthenticated) {
+    await requestPointerLockForGameplay();
+  } else if (document.pointerLockElement === renderer.domElement) {
+    document.exitPointerLock?.();
+  }
+});
+
+document.addEventListener('pointerlockchange', () => {
+  pointerLocked = document.pointerLockElement === renderer.domElement;
+});
+
+updateFullscreenButtonLabel();
 
 const hemi = new THREE.HemisphereLight(0xd6f1ff, 0x4d3a27, 1.1);
 scene.add(hemi);
@@ -244,15 +402,15 @@ scene.add(water);
 
 function mainIslandRadiusAtAngle(angle) {
   const profile = 0.86
-    + Math.sin(angle * 2.2 + 0.6) * 0.11
-    + Math.sin(angle * 4.6 - 0.9) * 0.06
-    + Math.cos(angle * 1.2 + 2.1) * 0.04;
+    + Math.sin(angle * 2 + 0.6) * 0.11
+    + Math.sin(angle * 5 - 0.9) * 0.06
+    + Math.cos(angle * 1 + 2.1) * 0.04;
   return THREE.MathUtils.clamp(worldLimit * profile, worldLimit * 0.66, worldLimit * 1.08);
 }
 
 function radialShape(radiusOffset = 0, segments = 144) {
   const shape = new THREE.Shape();
-  for (let i = 0; i <= segments; i += 1) {
+  for (let i = 0; i < segments; i += 1) {
     const t = (i / segments) * Math.PI * 2;
     const radius = Math.max(2.2, mainIslandRadiusAtAngle(t) + radiusOffset);
     const x = Math.cos(t) * radius;
@@ -459,6 +617,7 @@ let lighthouseInteriorPortal = null;
 let lighthouseTopPortal = null;
 let inLighthouseInterior = false;
 let isTeleporting = false;
+const dockWalkZones = [];
 
 const boatState = {
   mesh: null,
@@ -527,6 +686,7 @@ function addDock(anchor, yaw = 0, options = {}) {
   const plankWidth = options.plankWidth ?? 0.7;
   const spacing = options.spacing ?? 1.05;
   const addRamp = options.addRamp !== false;
+  const walkable = options.walkable !== false;
   const dock = new THREE.Group();
   dock.position.copy(anchor);
   dock.rotation.y = yaw;
@@ -565,14 +725,42 @@ function addDock(anchor, yaw = 0, options = {}) {
   }
 
   const railOffsetZ = plankWidth * 0.5 + 0.2;
+  const railHeight = options.railHeight ?? 0.5;
   for (const z of [-railOffsetZ, railOffsetZ]) {
-    const rail = new THREE.Mesh(
-      new THREE.BoxGeometry(deckLength + 0.3, 0.1, 0.12),
+    const topRail = new THREE.Mesh(
+      new THREE.BoxGeometry(deckLength + 0.34, 0.1, 0.12),
       new THREE.MeshStandardMaterial({ color: 0x5b412c, roughness: 0.92 })
     );
-    rail.position.set(deckCenterX, 0.36, z);
-    rail.castShadow = true;
-    dock.add(rail);
+    topRail.position.set(deckCenterX, railHeight, z);
+    topRail.castShadow = true;
+    topRail.receiveShadow = true;
+    dock.add(topRail);
+
+    const midRail = new THREE.Mesh(
+      new THREE.BoxGeometry(deckLength + 0.28, 0.08, 0.1),
+      new THREE.MeshStandardMaterial({ color: 0x60452f, roughness: 0.92 })
+    );
+    midRail.position.set(deckCenterX, railHeight - 0.18, z);
+    midRail.castShadow = true;
+    midRail.receiveShadow = true;
+    dock.add(midRail);
+  }
+
+  const railPostGeo = new THREE.BoxGeometry(0.12, railHeight + 0.06, 0.12);
+  const railPosts = Math.max(6, Math.floor(deckLength / 1.6));
+  for (let i = 0; i <= railPosts; i += 1) {
+    const t = railPosts === 0 ? 0 : i / railPosts;
+    const px = -plankLength * 0.5 + t * deckLength;
+    for (const z of [-railOffsetZ, railOffsetZ]) {
+      const post = new THREE.Mesh(
+        railPostGeo,
+        new THREE.MeshStandardMaterial({ color: 0x4d3624, roughness: 0.94 })
+      );
+      post.position.set(px, railHeight * 0.5, z);
+      post.castShadow = true;
+      post.receiveShadow = true;
+      dock.add(post);
+    }
   }
 
   const pillarGeo = new THREE.CylinderGeometry(0.14, 0.18, 1.0, 10);
@@ -590,6 +778,20 @@ function addDock(anchor, yaw = 0, options = {}) {
       dock.add(pillar);
     }
   }
+
+  if (walkable) {
+    const startX = addRamp ? -2.8 : -plankLength * 0.5 - 0.2;
+    const endX = lastCenterX + plankLength * 0.5 + 0.25;
+    dockWalkZones.push({
+      x: anchor.x,
+      z: anchor.z,
+      yaw,
+      minForward: startX,
+      maxForward: endX,
+      halfWidth: plankWidth * 0.5 + 0.26
+    });
+  }
+
   scene.add(dock);
 }
 
@@ -984,98 +1186,122 @@ function addWoodHouse(x, z, yaw = 0) {
   const trimMat = new THREE.MeshStandardMaterial({ color: 0x5b3a24, roughness: 0.9 });
   const roofMat = new THREE.MeshStandardMaterial({ color: 0x4e3423, roughness: 0.9 });
 
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(7.1, 0.2, 6.2), wallMat);
+  const houseW = 9.4;
+  const houseD = 8.0;
+  const wallH = 3.2;
+  const wallT = 0.22;
+  const doorW = 1.9;
+  const doorH = 2.45;
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(houseW, 0.2, houseD), wallMat);
   floor.position.y = 0.08;
   floor.receiveShadow = true;
   house.add(floor);
 
-  const back = new THREE.Mesh(new THREE.BoxGeometry(7.1, 2.7, 0.22), wallMat);
-  back.position.set(0, 1.46, -3.0);
-  const left = new THREE.Mesh(new THREE.BoxGeometry(0.22, 2.7, 6.2), wallMat);
-  left.position.set(-3.45, 1.46, 0);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(houseW, wallH, wallT), wallMat);
+  back.position.set(0, wallH * 0.5 + 0.1, -houseD * 0.5 + wallT * 0.5);
+  const left = new THREE.Mesh(new THREE.BoxGeometry(wallT, wallH, houseD), wallMat);
+  left.position.set(-houseW * 0.5 + wallT * 0.5, wallH * 0.5 + 0.1, 0);
   const right = left.clone();
-  right.position.x = 3.45;
-  const front = new THREE.Mesh(new THREE.BoxGeometry(7.1, 2.7, 0.22), wallMat);
-  front.position.set(0, 1.46, 3.0);
-  house.add(back, left, right, front);
+  right.position.x = houseW * 0.5 - wallT * 0.5;
 
-  const door = new THREE.Mesh(new THREE.BoxGeometry(1.24, 2.1, 0.08), trimMat);
-  door.position.set(0, 1.16, 2.9);
-  door.castShadow = true;
-  door.receiveShadow = true;
-  house.add(door);
+  const frontSideW = (houseW - doorW) * 0.5;
+  const frontLeft = new THREE.Mesh(new THREE.BoxGeometry(frontSideW, wallH, wallT), wallMat);
+  frontLeft.position.set(-(doorW * 0.5 + frontSideW * 0.5), wallH * 0.5 + 0.1, houseD * 0.5 - wallT * 0.5);
+  const frontRight = frontLeft.clone();
+  frontRight.position.x = -frontLeft.position.x;
+  const frontTop = new THREE.Mesh(new THREE.BoxGeometry(doorW, wallH - doorH, wallT), wallMat);
+  frontTop.position.set(0, doorH + (wallH - doorH) * 0.5 + 0.1, houseD * 0.5 - wallT * 0.5);
 
-  const doorKnob = new THREE.Mesh(
-    new THREE.SphereGeometry(0.06, 10, 8),
-    new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.3, metalness: 0.4 })
-  );
-  doorKnob.position.set(0.4, 1.13, 2.95);
-  house.add(doorKnob);
+  house.add(back, left, right, frontLeft, frontRight, frontTop);
 
-  const frameTop = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.12, 0.12), trimMat);
-  frameTop.position.set(0, 2.22, 2.95);
-  const frameLeft = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.2, 0.12), trimMat);
-  frameLeft.position.set(-0.67, 1.15, 2.95);
+  const frameTop = new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.24, 0.12, 0.12), trimMat);
+  frameTop.position.set(0, doorH + 0.16, houseD * 0.5 + 0.02);
+  const frameLeft = new THREE.Mesh(new THREE.BoxGeometry(0.1, doorH, 0.12), trimMat);
+  frameLeft.position.set(-doorW * 0.5 - 0.06, doorH * 0.5 + 0.1, houseD * 0.5 + 0.02);
   const frameRight = frameLeft.clone();
-  frameRight.position.x = 0.67;
+  frameRight.position.x = doorW * 0.5 + 0.06;
   house.add(frameTop, frameLeft, frameRight);
 
-  const roof = new THREE.Mesh(new THREE.ConeGeometry(4.55, 1.95, 4), roofMat);
-  roof.position.set(0, 3.2, 0);
-  roof.rotation.y = 0;
+  const eave = new THREE.Mesh(
+    new THREE.BoxGeometry(houseW + 0.12, 0.12, houseD + 0.12),
+    trimMat
+  );
+  eave.position.set(0, wallH + 0.12, 0);
+  eave.castShadow = true;
+  eave.receiveShadow = true;
+
+  const roof = new THREE.Mesh(
+    new THREE.ConeGeometry(Math.max(houseW, houseD) * 0.68, 2.45, 4),
+    roofMat
+  );
+  roof.position.set(0, wallH + 1.34, 0);
+  roof.rotation.y = Math.PI * 0.25;
   roof.castShadow = true;
   roof.receiveShadow = true;
-  house.add(roof);
+
+  const roofPeak = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.1, 0.14, 0.46, 8),
+    trimMat
+  );
+  roofPeak.position.set(0, wallH + 2.74, 0);
+  roofPeak.castShadow = true;
+  roofPeak.receiveShadow = true;
+
+  house.add(eave, roof, roofPeak);
 
   house.children.forEach((m) => {
     m.castShadow = true;
     m.receiveShadow = true;
   });
   scene.add(house);
-  addWorldCollider(x, z, 3.1, 'house');
+  addWorldCollider(x, z - houseD * 0.45, 2.7, 'house');
+  addWorldCollider(x - houseW * 0.48, z, 2.2, 'house');
+  addWorldCollider(x + houseW * 0.48, z, 2.2, 'house');
+  addWorldCollider(x - doorW * 0.95, z + houseD * 0.45, 1.1, 'house');
+  addWorldCollider(x + doorW * 0.95, z + houseD * 0.45, 1.1, 'house');
 }
 
 function addCliffAndWaterfall(x, z) {
   const cliff = new THREE.Group();
   cliff.position.set(x, 0, z);
   const rockMat = new THREE.MeshStandardMaterial({ color: 0x586069, roughness: 0.93 });
-  for (let i = 0; i < 7; i += 1) {
+  for (let i = 0; i < 9; i += 1) {
     const rock = new THREE.Mesh(
-      new THREE.DodecahedronGeometry(1.8 + Math.random() * 0.9, 0),
+      new THREE.DodecahedronGeometry(2.4 + Math.random() * 1.25, 0),
       rockMat
     );
-    rock.position.set((Math.random() - 0.5) * 6.8, 1.7 + Math.random() * 1.3, (Math.random() - 0.5) * 3.2);
-    rock.scale.set(1.6, 1 + Math.random() * 0.6, 1.3);
+    rock.position.set((Math.random() - 0.5) * 7.6, 2.05 + Math.random() * 1.8, (Math.random() - 0.5) * 3.7);
+    rock.scale.set(2.25, 1.3 + Math.random() * 0.75, 1.75);
     rock.castShadow = true;
     rock.receiveShadow = true;
     cliff.add(rock);
   }
 
   const waterFall = new THREE.Mesh(
-    new THREE.PlaneGeometry(2.2, 4.8),
+    new THREE.PlaneGeometry(3.6, 6.9),
     new THREE.MeshStandardMaterial({
       color: 0x8ed7ff,
       emissive: 0x0b6aa8,
-      emissiveIntensity: 0.28,
+      emissiveIntensity: 0.34,
       transparent: true,
-      opacity: 0.82,
+      opacity: 0.86,
       side: THREE.DoubleSide
     })
   );
-  waterFall.position.set(0.2, 2.1, 0.95);
-  waterFall.rotation.y = Math.PI * 0.02;
+  waterFall.position.set(0.35, 3.0, 1.2);
+  waterFall.rotation.y = Math.PI * 0.045;
   cliff.add(waterFall);
 
   const foam = new THREE.Mesh(
-    new THREE.CircleGeometry(1.35, 18),
-    new THREE.MeshStandardMaterial({ color: 0xe2f3ff, roughness: 0.7, transparent: true, opacity: 0.7 })
+    new THREE.CircleGeometry(2.05, 24),
+    new THREE.MeshStandardMaterial({ color: 0xe2f3ff, roughness: 0.7, transparent: true, opacity: 0.72 })
   );
   foam.rotation.x = -Math.PI / 2;
-  foam.position.set(0.2, -0.28, 1.05);
+  foam.position.set(0.35, -0.26, 1.36);
   cliff.add(foam);
 
   scene.add(cliff);
-  addWorldCollider(x, z, 2.35, 'cliff');
+  addWorldCollider(x, z, 3.35, 'cliff');
 }
 
 function populateMainIslandNature() {
@@ -1091,15 +1317,17 @@ function populateMainIslandNature() {
   addBush(-worldLimit * 0.26, worldLimit * 0.44, 0.72);
   addBush(worldLimit * 0.14, -worldLimit * 0.36, 0.7);
 
-  for (let i = 0; i < 48; i += 1) {
-    const angle = (i / 48) * Math.PI * 2;
-    const radius = worldLimit * (0.18 + Math.random() * 0.63);
-    const x = Math.cos(angle) * radius + (Math.random() - 0.5) * 1.9;
-    const z = Math.sin(angle) * radius + (Math.random() - 0.5) * 1.9;
+  for (let i = 0; i < 120; i += 1) {
+    const angle = (i / 120) * Math.PI * 2;
+    const radius = worldLimit * (0.1 + Math.random() * 0.78);
+    const x = Math.cos(angle) * radius + (Math.random() - 0.5) * 2.8;
+    const z = Math.sin(angle) * radius + (Math.random() - 0.5) * 2.8;
     addGrassTuft(x, z, 0.8 + Math.random() * 0.45, i % 3 ? 0x4f8a3f : 0x568f45);
   }
-  addFlowerPatch(worldLimit * 0.22, worldLimit * 0.38, 14, 4.8);
-  addFlowerPatch(-worldLimit * 0.33, worldLimit * 0.12, 12, 4.2);
+  addFlowerPatch(worldLimit * 0.22, worldLimit * 0.38, 18, 5.6);
+  addFlowerPatch(-worldLimit * 0.33, worldLimit * 0.12, 16, 5.1);
+  addFlowerPatch(worldLimit * 0.46, -worldLimit * 0.22, 14, 4.9);
+  addFlowerPatch(-worldLimit * 0.12, -worldLimit * 0.46, 13, 4.6);
 }
 
 function addLandmarks() {
@@ -1426,15 +1654,45 @@ function isWaterAt(x, z) {
   const radius = Math.hypot(x, z);
   if (radius > SWIM_MAX_RADIUS) return false;
 
+  // Hard land-safe radius for the main island footprint.
+  if (radius <= worldLimit + 8.4) return false;
+
   const angle = Math.atan2(z, x);
-  const shorelineRadius = Math.max(mainIslandRadiusAtAngle(angle) + 3.5, worldLimit + 18);
+  // Keep all shoreline blends (sand + hand-shaped beach edits) walkable.
+  // Ocean should only start clearly beyond the island rim.
+  const shorelineRadius = mainIslandRadiusAtAngle(angle) + 7.4;
   const onMainIslandLand = radius <= shorelineRadius;
   if (onMainIslandLand) return false;
 
+  // The dock-side beach uses custom blended geometry that can extend beyond radialShape.
+  // Keep that blended shoreline region dry so players walk there instead of swimming.
+  const dockRadius = Math.hypot(ISLAND_DOCK_POS.x, ISLAND_DOCK_POS.z);
+  const nearMainDockBeach = distance2D({ x, z }, ISLAND_DOCK_POS) < 11.4 && radius <= dockRadius + 3.2;
+  if (nearMainDockBeach) return false;
+
   const dxL = x - LIGHTHOUSE_POS.x;
   const dzL = z - LIGHTHOUSE_POS.z;
-  const onLighthouseIslandLand = Math.hypot(dxL, dzL) <= 13.8;
+  const onLighthouseIslandLand = Math.hypot(dxL, dzL) <= 15.4;
   if (onLighthouseIslandLand) return false;
+
+  for (const zone of dockWalkZones) {
+    const dx = x - zone.x;
+    const dz = z - zone.z;
+    const fX = Math.sin(zone.yaw);
+    const fZ = Math.cos(zone.yaw);
+    const rX = Math.cos(zone.yaw);
+    const rZ = -Math.sin(zone.yaw);
+    const forward = dx * fX + dz * fZ;
+    const side = dx * rX + dz * rZ;
+    // Expand dry area around docks so planks, rails and edges remain walkable.
+    if (
+      forward >= zone.minForward - 1.6 &&
+      forward <= zone.maxForward + 1.6 &&
+      Math.abs(side) <= zone.halfWidth + 1.25
+    ) {
+      return false;
+    }
+  }
 
   return true;
 }
@@ -1500,6 +1758,11 @@ function preserveLocalInWater(local, prevY) {
 }
 
 function computeRemoteSwimState(player) {
+  // If a player is at normal ground height, always treat as walking.
+  if (player.mesh.position.y >= GROUND_Y - 0.08) {
+    player.isSwimming = false;
+    return;
+  }
   const inWater = isWaterAt(player.mesh.position.x, player.mesh.position.z);
   if (!inWater) {
     player.isSwimming = false;
@@ -1517,6 +1780,11 @@ function swimStateFromPosition(player) {
 }
 
 function applyLocalSurfaceState(local) {
+  // Ground-height safeguard: never swim while standing on sand/land.
+  if (local.y >= GROUND_Y - 0.08) {
+    local.isSwimming = false;
+    return;
+  }
   const inWater = isWaterAt(local.x, local.z) && !inLighthouseInterior && !local.onBoat;
   if (!inWater) {
     local.isSwimming = false;
@@ -1600,8 +1868,11 @@ function swimHintText() {
 }
 
 function canBoardBoat(local) {
+  const nearDock = distance2D(local, ISLAND_DOCK_POS) < 5 || distance2D(local, LIGHTHOUSE_DOCK_POS) < 5;
+  const nearBoat = Boolean(boatState.mesh) && distance2D(local, boatState) < 5.2;
+  if (nearBoat) return true;
   if (interactWhileSwimming(local)) return false;
-  return distance2D(local, ISLAND_DOCK_POS) < 5 || distance2D(local, LIGHTHOUSE_DOCK_POS) < 5;
+  return nearDock;
 }
 
 function movementClamp(local) {
@@ -1691,19 +1962,21 @@ function inDeepWater(player) {
 
 function applySwimPose(player, body, parts, baseBodyY, delta) {
   const phase = swimStrokePhase(player);
-  const speed = Math.min(1, player.animSpeed + 0.24);
-  const strokePhase = phase * 1.18;
+  const speed = Math.min(1, player.animSpeed + 0.25);
+  const strokePhase = phase * 1.45;
   const leftStroke = Math.sin(strokePhase);
   const rightStroke = Math.sin(strokePhase + Math.PI);
-  const kick = Math.sin(strokePhase * 2.2) * (0.22 + speed * 0.1);
-  const roll = Math.sin(strokePhase) * 0.09;
-  const bodyBob = -0.38 + Math.sin(strokePhase * 2) * 0.04;
-  body.position.y += (baseBodyY + bodyBob - body.position.y) * Math.min(1, delta * 8.4);
-  smoothRotation(body, -0.74 + Math.sin(strokePhase * 0.6) * 0.03, 0, roll, delta, 11.6);
-  smoothRotation(parts.leftArmPivot, -1.02 + leftStroke * 0.98, 0, -0.34 + leftStroke * 0.34, delta, 13);
-  smoothRotation(parts.rightArmPivot, -1.02 + rightStroke * 0.98, 0, 0.34 - rightStroke * 0.34, delta, 13);
-  smoothRotation(parts.leftLegPivot, 0.34 + kick, 0, 0, delta, 11.2);
-  smoothRotation(parts.rightLegPivot, 0.34 - kick, 0, 0, delta, 11.2);
+  const flutter = Math.sin(strokePhase * 3.2) * (0.14 + speed * 0.12);
+  const roll = Math.sin(strokePhase) * 0.05;
+  const bodyBob = -0.76 + Math.sin(strokePhase * 2.0) * 0.018;
+  body.position.y += (baseBodyY + bodyBob - body.position.y) * Math.min(1, delta * 9.2);
+  // True prone belly-down posture, nearly parallel to the water surface.
+  smoothRotation(body, 1.48 + Math.sin(strokePhase * 0.5) * 0.015, 0, roll, delta, 12.4);
+  // Front crawl: one arm pulls back while the other reaches forward.
+  smoothRotation(parts.leftArmPivot, -0.45 + leftStroke * 1.28, 0, -0.38 + leftStroke * 0.18, delta, 14.2);
+  smoothRotation(parts.rightArmPivot, -0.45 + rightStroke * 1.28, 0, 0.38 - rightStroke * 0.18, delta, 14.2);
+  smoothRotation(parts.leftLegPivot, 0.2 + flutter, 0, 0, delta, 12.1);
+  smoothRotation(parts.rightLegPivot, 0.2 - flutter, 0, 0, delta, 12.1);
 }
 
 function shouldUseWaterIdle(player, speed) {
@@ -1712,12 +1985,12 @@ function shouldUseWaterIdle(player, speed) {
 
 function applyWaterIdlePose(player, body, parts, baseBodyY, now, delta) {
   const t = now * 0.0026 + player.animPhase;
-  body.position.y += (baseBodyY - 0.34 + Math.sin(t * 1.6) * 0.05 - body.position.y) * Math.min(1, delta * 7);
-  smoothRotation(body, -0.66, 0, Math.sin(t * 0.8) * 0.04, delta, 9.2);
-  smoothRotation(parts.leftArmPivot, -0.92 + Math.sin(t * 1.3) * 0.14, 0, -0.24 + Math.sin(t) * 0.07, delta, 10.3);
-  smoothRotation(parts.rightArmPivot, -0.92 - Math.sin(t * 1.3) * 0.14, 0, 0.24 - Math.sin(t) * 0.07, delta, 10.3);
-  smoothRotation(parts.leftLegPivot, 0.32 + Math.sin(t * 1.8) * 0.06, 0, 0, delta, 9.6);
-  smoothRotation(parts.rightLegPivot, 0.32 - Math.sin(t * 1.8) * 0.06, 0, 0, delta, 9.6);
+  body.position.y += (baseBodyY - 0.76 + Math.sin(t * 1.5) * 0.02 - body.position.y) * Math.min(1, delta * 8.2);
+  smoothRotation(body, 1.45, 0, Math.sin(t * 0.8) * 0.018, delta, 10.2);
+  smoothRotation(parts.leftArmPivot, -0.38 + Math.sin(t * 1.2) * 0.1, 0, -0.3, delta, 10.9);
+  smoothRotation(parts.rightArmPivot, -0.38 - Math.sin(t * 1.2) * 0.1, 0, 0.3, delta, 10.9);
+  smoothRotation(parts.leftLegPivot, 0.2 + Math.sin(t * 1.9) * 0.04, 0, 0, delta, 10.1);
+  smoothRotation(parts.rightLegPivot, 0.2 - Math.sin(t * 1.9) * 0.04, 0, 0, delta, 10.1);
 }
 
 function movementInputScale(local, sprintHeld, isSliding) {
@@ -2473,13 +2746,17 @@ function hasRemoteDescription(pc) {
 }
 
 function ensureVoicePeer(peerId, shouldOffer) {
-  if (!voiceEnabled || !localVoiceStream || !peerId || peerId === localPlayerId) return null;
+  if (!voiceEnabled || !peerId || peerId === localPlayerId) return null;
   if (voicePeers.has(peerId)) return voicePeers.get(peerId);
 
   const pc = new RTCPeerConnection({
     iceServers: VOICE_ICE_SERVERS
   });
-  localVoiceStream.getTracks().forEach((track) => pc.addTrack(track, localVoiceStream));
+  const audioTransceiver = pc.addTransceiver('audio', { direction: 'sendrecv' });
+  const localTrack = localVoiceStream?.getAudioTracks?.()[0] || null;
+  if (localTrack) {
+    audioTransceiver.sender.replaceTrack(localTrack).catch(() => {});
+  }
   pc.onicecandidate = (event) => {
     if (event.candidate) {
       socket.emit('voice:ice', { to: peerId, candidate: event.candidate });
@@ -2529,37 +2806,30 @@ async function enableVoice() {
     if (voiceToggleEl) voiceToggleEl.textContent = 'Voice not supported';
     return;
   }
-  try {
-    localVoiceStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
-    });
-  } catch {
-    if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-      if (voiceToggleEl) voiceToggleEl.textContent = 'Voice needs HTTPS';
-    } else if (voiceToggleEl) {
-      voiceToggleEl.textContent = 'Mic blocked';
-    }
-    return;
-  }
   voiceEnabled = true;
-  if (voiceToggleEl) voiceToggleEl.textContent = 'Disable Proximity Voice (On)';
+  await setVoiceMuted(false);
   socket.emit('voice:join');
 }
 
 function disableVoice() {
   if (!voiceEnabled) return;
   voiceEnabled = false;
+  voiceMuted = false;
   socket.emit('voice:leave');
   if (localVoiceStream) {
     localVoiceStream.getTracks().forEach((track) => track.stop());
     localVoiceStream = null;
   }
   [...voicePeers.keys()].forEach(removeVoicePeer);
-  if (voiceToggleEl) voiceToggleEl.textContent = 'Enable Proximity Voice';
+  updateVoiceButtonLabels();
+}
+
+async function toggleVoiceQuick() {
+  if (!voiceEnabled) {
+    await enableVoice();
+    return;
+  }
+  await setVoiceMuted(!voiceMuted);
 }
 
 function updateVoiceVolumes() {
@@ -2710,11 +2980,14 @@ function boardBoat(local) {
   boatState.onboard = true;
   local.onBoat = true;
   local.isSwimming = false;
-  const slot = nearestDockSlot(local, 11) || { dock: ISLAND_DOCK_POS, yaw: ISLAND_DOCK_YAW };
-  const posed = boatPoseForDock(slot);
-  boatState.x = posed.x;
-  boatState.z = posed.z;
-  boatState.yaw = posed.yaw;
+  const slot = nearestDockSlot(local, 11);
+  const nearBoat = distance2D(local, boatState) < 5.2;
+  if (slot && !nearBoat) {
+    const posed = boatPoseForDock(slot);
+    boatState.x = posed.x;
+    boatState.z = posed.z;
+    boatState.yaw = posed.yaw;
+  }
   boatState.speed = 0;
   boatState.mesh.position.set(boatState.x, boatState.y, boatState.z);
   boatState.mesh.rotation.y = boatState.yaw;
@@ -2817,6 +3090,12 @@ function tryInteract() {
 
 socket.on('connect', () => {
   statusEl.textContent = 'Connected';
+  if (!isAuthenticated) {
+    if (authStatusEl && !authStatusEl.textContent.trim()) {
+      authStatusEl.textContent = 'Signing in...';
+    }
+    autoAuthToGameplay();
+  }
 });
 
 socket.on('disconnect', () => {
@@ -2989,10 +3268,43 @@ window.addEventListener('keydown', (event) => {
     setMenuOpen(!menuOpen);
     return;
   }
-  if (!isAuthenticated || menuOpen || !customizeModalEl.classList.contains('hidden')) return;
-  if (document.activeElement === chatInputEl || document.activeElement === nameInputEl || document.activeElement === authUsernameEl || document.activeElement === authPasswordEl) return;
 
   const key = event.key.toLowerCase();
+  const typingInInput =
+    document.activeElement === chatInputEl ||
+    document.activeElement === nameInputEl ||
+    document.activeElement === authUsernameEl ||
+    document.activeElement === authPasswordEl;
+
+  if (
+    key === '/' &&
+    isAuthenticated &&
+    authModalEl.classList.contains('hidden') &&
+    customizeModalEl.classList.contains('hidden') &&
+    !typingInInput
+  ) {
+    event.preventDefault();
+    if (menuOpen) setMenuOpen(false);
+    setChatPanelOpen(true);
+    chatInputEl?.focus();
+    return;
+  }
+
+  if (
+    key === 'f' &&
+    !event.repeat &&
+    isAuthenticated &&
+    authModalEl.classList.contains('hidden') &&
+    customizeModalEl.classList.contains('hidden') &&
+    !typingInInput
+  ) {
+    event.preventDefault();
+    void toggleFullscreenPointerLock();
+    return;
+  }
+
+  if (!isAuthenticated || menuOpen || !customizeModalEl.classList.contains('hidden')) return;
+  if (typingInInput) return;
   if (key === 'q') {
     emoteWheelOpen = true;
     emoteWheelEl?.classList.remove('hidden');
@@ -3046,6 +3358,10 @@ let previewRenderer = null;
 let previewAvatar = null;
 let previewLight = null;
 let previewYaw = 0;
+let previewAutoSpin = true;
+let previewDragging = false;
+let previewPointerId = null;
+let previewLastX = 0;
 
 function currentFormAppearance() {
   return normalizeAppearance(
@@ -3100,6 +3416,37 @@ function ensurePreviewScene() {
   previewScene.add(pad);
   previewRenderer = new THREE.WebGLRenderer({ canvas: customizePreviewEl, antialias: true, alpha: false });
   previewRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  const startDrag = (event) => {
+    previewDragging = true;
+    previewAutoSpin = false;
+    previewPointerId = event.pointerId;
+    previewLastX = event.clientX;
+    if (customizePreviewEl.setPointerCapture) {
+      try {
+        customizePreviewEl.setPointerCapture(event.pointerId);
+      } catch {}
+    }
+  };
+
+  const moveDrag = (event) => {
+    if (!previewDragging || (previewPointerId !== null && event.pointerId !== previewPointerId)) return;
+    const dx = event.clientX - previewLastX;
+    previewLastX = event.clientX;
+    previewYaw += dx * 0.012;
+  };
+
+  const endDrag = (event) => {
+    if (previewPointerId !== null && event.pointerId !== previewPointerId) return;
+    previewDragging = false;
+    previewPointerId = null;
+  };
+
+  customizePreviewEl.addEventListener('pointerdown', startDrag);
+  customizePreviewEl.addEventListener('pointermove', moveDrag);
+  customizePreviewEl.addEventListener('pointerup', endDrag);
+  customizePreviewEl.addEventListener('pointercancel', endDrag);
+  customizePreviewEl.addEventListener('pointerleave', endDrag);
 }
 
 function updatePreviewAvatar() {
@@ -3118,7 +3465,9 @@ function renderPreview() {
   previewRenderer.setSize(width, height, false);
   previewCamera.aspect = width / height;
   previewCamera.updateProjectionMatrix();
-  previewYaw += 0.012;
+  if (previewAutoSpin && !previewDragging) {
+    previewYaw += 0.012;
+  }
   previewAvatar.rotation.y = previewYaw;
   previewRenderer.render(previewScene, previewCamera);
 }
@@ -3250,7 +3599,7 @@ customizeFormEl.addEventListener('submit', (event) => {
     }
 
     applyPlayerCustomization(localPlayerId, response.name, response.color, response.appearance);
-    customizeStatusEl.textContent = `Saved as ${response.name}`;
+    customizeStatusEl.textContent = `Saved as ${response.name}. This is now your spawn avatar.`;
   });
 });
 
@@ -3284,6 +3633,18 @@ async function submitAuth(mode) {
 }
 
 menuToggleEl?.addEventListener('click', () => setMenuOpen(!menuOpen));
+chatToggleEl?.addEventListener('click', () => {
+  if (!isAuthenticated) return;
+  setChatPanelOpen(!chatPanelOpen);
+  if (chatPanelOpen) chatInputEl?.focus();
+});
+voiceQuickToggleEl?.addEventListener('click', async () => {
+  if (!isAuthenticated) return;
+  await toggleVoiceQuick();
+});
+fullscreenToggleEl?.addEventListener('click', async () => {
+  await toggleFullscreenPointerLock();
+});
 menuOverlayEl?.addEventListener('click', (event) => {
   if (event.target === menuOverlayEl) setMenuOpen(false);
 });
@@ -3336,11 +3697,7 @@ wheelButtons.forEach((button) => {
 });
 
 voiceToggleEl?.addEventListener('click', async () => {
-  if (voiceEnabled) {
-    disableVoice();
-  } else {
-    await enableVoice();
-  }
+  await toggleVoiceQuick();
 });
 
 window.addEventListener('resize', () => {
@@ -3350,6 +3707,9 @@ window.addEventListener('resize', () => {
 });
 
 window.addEventListener('beforeunload', () => {
+  if (document.pointerLockElement) {
+    document.exitPointerLock?.();
+  }
   disableVoice();
 });
 
@@ -3447,6 +3807,7 @@ let lastPointerX = 0;
 let lastPointerY = 0;
 
 renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (pointerLocked) return;
   if (event.button !== 0) return;
   isOrbiting = true;
   orbitPointerId = event.pointerId;
@@ -3456,6 +3817,11 @@ renderer.domElement.addEventListener('pointerdown', (event) => {
 });
 
 renderer.domElement.addEventListener('pointermove', (event) => {
+  if (pointerLocked) {
+    cameraYaw -= (event.movementX || 0) * 0.0038;
+    cameraPitch = Math.max(CAMERA_PITCH_MIN, Math.min(CAMERA_PITCH_MAX, cameraPitch - (event.movementY || 0) * 0.0038));
+    return;
+  }
   if (!isOrbiting || event.pointerId !== orbitPointerId) return;
   const dx = event.clientX - lastPointerX;
   const dy = event.clientY - lastPointerY;
@@ -3467,6 +3833,7 @@ renderer.domElement.addEventListener('pointermove', (event) => {
 });
 
 function endOrbit(event) {
+  if (pointerLocked) return;
   if (!isOrbiting || event.pointerId !== orbitPointerId) return;
   isOrbiting = false;
   orbitPointerId = null;
