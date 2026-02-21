@@ -74,8 +74,8 @@
 
       #hud {
         position: fixed;
-        left: 16px;
-        top: 74px;
+        right: 16px;
+        bottom: 16px;
         z-index: 10;
         padding: 12px 14px;
         min-width: 240px;
@@ -281,6 +281,12 @@
         z-index: 10;
         padding: 10px;
         width: 196px;
+        transition: width 0.18s ease, padding 0.18s ease;
+      }
+
+      #mini-panel.expanded {
+        width: 320px;
+        padding: 12px;
       }
 
       #mini-map {
@@ -289,6 +295,12 @@
         border-radius: 12px;
         display: block;
         background: rgba(0, 0, 0, 0.25);
+        cursor: pointer;
+      }
+
+      #mini-panel.expanded #mini-map {
+        width: 296px;
+        height: 296px;
       }
 
       #compass {
@@ -308,9 +320,9 @@
 
       #chat-panel {
         position: fixed;
-        right: 16px;
-        bottom: 16px;
-        z-index: 10;
+        left: 16px;
+        top: 74px;
+        z-index: 19;
         width: min(360px, calc(100vw - 32px));
         display: grid;
         grid-template-rows: 1fr auto;
@@ -591,6 +603,12 @@
         gap: 8px;
       }
 
+      #menu-emote-buttons {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
       #mobile-controls {
         position: fixed;
         inset: 0;
@@ -686,6 +704,93 @@
           display: block;
         }
       }
+
+      body.mobile-ui #top-left-toolbar {
+        left: 8px;
+        top: 8px;
+        gap: 6px;
+        padding: 6px;
+      }
+
+      body.mobile-ui .toolbar-btn {
+        width: 38px;
+        height: 38px;
+        font-size: 16px;
+      }
+
+      body.mobile-ui #world-state {
+        top: 8px;
+        padding: 6px 10px;
+        font-size: 11px;
+      }
+
+      body.mobile-ui #chat-panel {
+        top: auto;
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+        width: auto;
+        max-height: 42vh;
+        z-index: 22;
+      }
+
+      body.mobile-ui #chat-log {
+        max-height: 92px;
+      }
+
+      body.mobile-ui #hud {
+        right: 8px;
+        bottom: 8px;
+        min-width: 0;
+        width: min(56vw, 240px);
+        padding: 8px 10px;
+        z-index: 12;
+      }
+
+      body.mobile-ui #hud .title {
+        font-size: 13px;
+        margin-bottom: 6px;
+      }
+
+      body.mobile-ui #hud p {
+        font-size: 11px;
+        margin: 2px 0;
+      }
+
+      body.mobile-ui #stamina-wrap {
+        margin-top: 5px;
+      }
+
+      body.mobile-ui #mini-panel {
+        left: 8px;
+        bottom: 8px;
+        width: 138px;
+        padding: 8px;
+        z-index: 12;
+      }
+
+      body.mobile-ui #mini-map {
+        width: 122px;
+        height: 122px;
+      }
+
+      body.mobile-ui #mini-panel.expanded {
+        width: min(82vw, 300px);
+      }
+
+      body.mobile-ui #mini-panel.expanded #mini-map {
+        width: min(76vw, 276px);
+        height: min(76vw, 276px);
+      }
+
+      body.mobile-ui #compass {
+        font-size: 10px;
+      }
+
+      body.mobile-ui #menu-panel {
+        width: calc(100vw - 16px);
+        max-height: calc(100vh - 16px);
+      }
     </style>
   </head>
   <body>
@@ -724,6 +829,17 @@
           <div class="menu-actions">
             <button id="customize-open" type="button">Customize Character</button>
             <button id="voice-toggle" type="button">Enable Proximity Voice</button>
+          </div>
+        </section>
+        <section class="menu-section">
+          <h3>Settings</h3>
+          <div class="menu-actions">
+            <button id="minimap-toggle" type="button">Minimap: On</button>
+          </div>
+          <div id="menu-emote-buttons" style="margin-top:8px;">
+            <button type="button" data-emote="wave">Wave</button>
+            <button type="button" data-emote="dance">Dance</button>
+            <button type="button" data-emote="cheer">Cheer</button>
           </div>
         </section>
         <section class="menu-section">
@@ -767,15 +883,6 @@
     <section id="mini-panel" class="panel">
       <canvas id="mini-map" width="176" height="176"></canvas>
       <div id="compass">Heading: N</div>
-    </section>
-
-    <section id="action-panel" class="panel">
-      <h2>Emotes</h2>
-      <div id="emote-buttons">
-        <button type="button" data-emote="wave">Wave</button>
-        <button type="button" data-emote="dance">Dance</button>
-        <button type="button" data-emote="cheer">Cheer</button>
-      </div>
     </section>
 
     <section id="chat-panel" class="panel">

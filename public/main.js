@@ -22,8 +22,10 @@ const interactHintEl = document.getElementById('interact-hint');
 const timeLabelEl = document.getElementById('time-label');
 const weatherLabelEl = document.getElementById('weather-label');
 const compassEl = document.getElementById('compass');
+const miniPanelEl = document.getElementById('mini-panel');
 const minimapEl = document.getElementById('mini-map');
 const minimapCtx = minimapEl.getContext('2d');
+const minimapToggleEl = document.getElementById('minimap-toggle');
 const chatLogEl = document.getElementById('chat-log');
 const chatFormEl = document.getElementById('chat-form');
 const chatInputEl = document.getElementById('chat-input');
@@ -63,7 +65,7 @@ const emoteWheelEl = document.getElementById('emote-wheel');
 const wheelButtons = Array.from(document.querySelectorAll('[data-wheel-emote]'));
 const nameTagsEl = document.getElementById('name-tags');
 const emoteButtons = Array.from(document.querySelectorAll('[data-emote]'));
-const gameplayPanels = ['hud', 'mini-panel', 'action-panel', 'chat-panel', 'world-state', 'top-left-toolbar']
+const gameplayPanels = ['hud', 'mini-panel', 'chat-panel', 'world-state', 'top-left-toolbar']
   .map((id) => document.getElementById(id))
   .filter(Boolean);
 
@@ -156,15 +158,60 @@ function setGameplayVisible(visible) {
 
 let voiceEnabled = false;
 let voiceMuted = false;
-let chatPanelOpen = true;
+const cachedChatOpen = localStorage.getItem('island_chat_open');
+let chatPanelOpen = cachedChatOpen === null ? true : cachedChatOpen === '1';
 let pointerLocked = false;
+let minimapExpanded = false;
+let minimapEnabled = localStorage.getItem('island_minimap_enabled') !== '0';
+
+function setMinimapCanvasSize(expanded) {
+  const size = expanded ? 296 : 176;
+  if (minimapEl.width === size && minimapEl.height === size) return;
+  minimapEl.width = size;
+  minimapEl.height = size;
+}
+
+function updateMinimapToggleLabel() {
+  if (!minimapToggleEl) return;
+  minimapToggleEl.textContent = minimapEnabled ? 'Minimap: On' : 'Minimap: Off';
+}
+
+function setMinimapExpanded(expanded) {
+  if (!minimapEnabled) expanded = false;
+  minimapExpanded = Boolean(expanded);
+  miniPanelEl?.classList.toggle('expanded', minimapExpanded);
+  setMinimapCanvasSize(minimapExpanded);
+}
+
+function setMinimapEnabled(enabled) {
+  minimapEnabled = Boolean(enabled);
+  localStorage.setItem('island_minimap_enabled', minimapEnabled ? '1' : '0');
+  if (!minimapEnabled) minimapExpanded = false;
+  miniPanelEl?.classList.toggle('hidden', !minimapEnabled);
+  miniPanelEl?.classList.toggle('expanded', minimapEnabled && minimapExpanded);
+  setMinimapCanvasSize(minimapEnabled && minimapExpanded);
+  updateMinimapToggleLabel();
+}
 
 function setChatPanelOpen(open) {
   chatPanelOpen = Boolean(open);
+  localStorage.setItem('island_chat_open', chatPanelOpen ? '1' : '0');
   chatPanelEl?.classList.toggle('hidden', !chatPanelOpen);
   if (chatToggleEl) {
     chatToggleEl.style.filter = chatPanelOpen ? 'none' : 'grayscale(0.95) brightness(0.75)';
     chatToggleEl.title = chatPanelOpen ? 'Hide chat' : 'Open chat';
+  }
+}
+
+function isMobileLayout() {
+  return window.matchMedia('(max-width: 900px), (max-height: 700px), (pointer: coarse)').matches;
+}
+
+function applyResponsiveLayout() {
+  const mobile = isMobileLayout();
+  document.body.classList.toggle('mobile-ui', mobile);
+  if (cachedChatOpen === null) {
+    setChatPanelOpen(!mobile);
   }
 }
 
@@ -293,8 +340,10 @@ function setMenuOpen(open) {
 }
 
 setAuthModalOpen(true, 'Login or create an account to continue.');
-setChatPanelOpen(true);
+setChatPanelOpen(chatPanelOpen);
 updateVoiceButtonLabels();
+setMinimapEnabled(minimapEnabled);
+applyResponsiveLayout();
 
 const joystickEl = document.getElementById('joystick');
 const joystickStickEl = document.getElementById('joystick-stick');
@@ -311,7 +360,7 @@ const VOICE_ICE_SERVERS = [
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' }
 ];
-const VOICE_RADIUS = 40;
+const VOICE_RADIUS = 180;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0xb7d7e6, 45, 160);
@@ -397,7 +446,7 @@ const water = new THREE.Mesh(
   })
 );
 water.rotation.x = -Math.PI / 2;
-water.position.y = -0.35;
+water.position.y = 0.38;
 scene.add(water);
 
 function mainIslandRadiusAtAngle(angle) {
@@ -426,11 +475,12 @@ function radialShape(radiusOffset = 0, segments = 144) {
 }
 
 function addMainIslandTerrain() {
+  // Original island scale restored. Only vertical alignment changed to remove the seam.
   const cliff = new THREE.Mesh(
     new THREE.CylinderGeometry(worldLimit + 4, worldLimit + 7, 4.9, 72, 1),
     new THREE.MeshStandardMaterial({ color: 0xc6b188, roughness: 0.96, metalness: 0.01 })
   );
-  cliff.position.y = -2.5;
+  cliff.position.y = -1.15; // top at ~1.3, matching shoreline layers
   cliff.receiveShadow = true;
   scene.add(cliff);
 
@@ -472,6 +522,38 @@ const worldColliders = [];
 
 function addWorldCollider(x, z, radius, tag = 'solid') {
   worldColliders.push({ x, z, radius, tag });
+}
+
+function addWallCollisionFromMesh(mesh, tag = 'house') {
+  if (!mesh) return;
+  mesh.updateWorldMatrix(true, false);
+  const box = new THREE.Box3().setFromObject(mesh);
+  const minX = box.min.x;
+  const maxX = box.max.x;
+  const minZ = box.min.z;
+  const maxZ = box.max.z;
+  const width = Math.max(0.01, maxX - minX);
+  const depth = Math.max(0.01, maxZ - minZ);
+  const cx = (minX + maxX) * 0.5;
+  const cz = (minZ + maxZ) * 0.5;
+
+  if (width >= depth) {
+    const radius = depth * 0.5 + 0.2;
+    const count = Math.max(2, Math.ceil(width / Math.max(0.45, radius * 1.3)));
+    for (let i = 0; i < count; i += 1) {
+      const t = count === 1 ? 0.5 : i / (count - 1);
+      const x = minX + t * width;
+      addWorldCollider(x, cz, radius, tag);
+    }
+  } else {
+    const radius = width * 0.5 + 0.2;
+    const count = Math.max(2, Math.ceil(depth / Math.max(0.45, radius * 1.3)));
+    for (let i = 0; i < count; i += 1) {
+      const t = count === 1 ? 0.5 : i / (count - 1);
+      const z = minZ + t * depth;
+      addWorldCollider(cx, z, radius, tag);
+    }
+  }
 }
 
 function resolveWorldCollisions(x, z, y = GROUND_Y) {
@@ -611,7 +693,7 @@ const INTERIOR_EXIT_PORTAL_POS = new THREE.Vector3(
 const SWIM_MIN_RADIUS = worldLimit + 0.6;
 const SWIM_MAX_RADIUS = worldLimit * 3.9;
 const SWIM_SURFACE_Y = 0.38;
-const SWIM_SINK_Y = -0.15;
+const SWIM_SINK_Y = -3.6;
 let lighthouseInteriorGroup = null;
 let lighthouseInteriorPortal = null;
 let lighthouseTopPortal = null;
@@ -782,13 +864,16 @@ function addDock(anchor, yaw = 0, options = {}) {
   if (walkable) {
     const startX = addRamp ? -2.8 : -plankLength * 0.5 - 0.2;
     const endX = lastCenterX + plankLength * 0.5 + 0.25;
+    const deckMinX = -plankLength * 0.5;
+    const deckMaxX = lastCenterX + plankLength * 0.5;
     dockWalkZones.push({
       x: anchor.x,
       z: anchor.z,
       yaw,
-      minForward: startX,
-      maxForward: endX,
-      halfWidth: plankWidth * 0.5 + 0.26
+      minForward: Math.min(startX, deckMinX) - 3.2,
+      maxForward: Math.max(endX, deckMaxX) + 3.2,
+      halfWidth: plankWidth * 0.5 + 1.8,
+      floorY: anchor.y + 0.13
     });
   }
 
@@ -1254,51 +1339,123 @@ function addWoodHouse(x, z, yaw = 0) {
     m.receiveShadow = true;
   });
   scene.add(house);
-  addWorldCollider(x, z - houseD * 0.45, 2.7, 'house');
-  addWorldCollider(x - houseW * 0.48, z, 2.2, 'house');
-  addWorldCollider(x + houseW * 0.48, z, 2.2, 'house');
-  addWorldCollider(x - doorW * 0.95, z + houseD * 0.45, 1.1, 'house');
-  addWorldCollider(x + doorW * 0.95, z + houseD * 0.45, 1.1, 'house');
+  // Use the actual wall meshes for collision so blocking matches visible walls.
+  addWallCollisionFromMesh(back, 'house');
+  addWallCollisionFromMesh(left, 'house');
+  addWallCollisionFromMesh(right, 'house');
+  addWallCollisionFromMesh(frontLeft, 'house');
+  addWallCollisionFromMesh(frontRight, 'house');
+  addWallCollisionFromMesh(frontTop, 'house');
 }
 
 function addCliffAndWaterfall(x, z) {
   const cliff = new THREE.Group();
   cliff.position.set(x, 0, z);
   const rockMat = new THREE.MeshStandardMaterial({ color: 0x586069, roughness: 0.93 });
-  for (let i = 0; i < 9; i += 1) {
+  const faceMat = new THREE.MeshStandardMaterial({ color: 0x5f6872, roughness: 0.9 });
+  const mainRock = new THREE.Mesh(
+    new THREE.DodecahedronGeometry(4.8, 0),
+    rockMat
+  );
+  mainRock.position.set(0, 3.6, 0);
+  mainRock.scale.set(2.6, 1.7, 2.0);
+  mainRock.castShadow = true;
+  mainRock.receiveShadow = true;
+  cliff.add(mainRock);
+
+  for (let i = 0; i < 11; i += 1) {
+    let rx = (Math.random() - 0.5) * 7.6;
+    let rz = (Math.random() - 0.5) * 3.7;
+    // Keep front faces clearer so waterfall stays visible.
+    if ((rx < 0 && rz < 1.2) || (rz > 0.1 && Math.abs(rx) < 2.2)) {
+      rx += 1.8;
+      rz -= 1.2;
+    }
     const rock = new THREE.Mesh(
-      new THREE.DodecahedronGeometry(2.4 + Math.random() * 1.25, 0),
+      new THREE.DodecahedronGeometry(3.1 + Math.random() * 1.8, 0),
       rockMat
     );
-    rock.position.set((Math.random() - 0.5) * 7.6, 2.05 + Math.random() * 1.8, (Math.random() - 0.5) * 3.7);
-    rock.scale.set(2.25, 1.3 + Math.random() * 0.75, 1.75);
+    rock.position.set(rx, 2.25 + Math.random() * 2.1, rz);
+    rock.scale.set(2.55, 1.45 + Math.random() * 0.95, 2.0);
     rock.castShadow = true;
     rock.receiveShadow = true;
     cliff.add(rock);
   }
 
-  const waterFall = new THREE.Mesh(
-    new THREE.PlaneGeometry(3.6, 6.9),
-    new THREE.MeshStandardMaterial({
-      color: 0x8ed7ff,
-      emissive: 0x0b6aa8,
-      emissiveIntensity: 0.34,
-      transparent: true,
-      opacity: 0.86,
-      side: THREE.DoubleSide
-    })
-  );
-  waterFall.position.set(0.35, 3.0, 1.2);
-  waterFall.rotation.y = Math.PI * 0.045;
-  cliff.add(waterFall);
+  const makeWaterfallFace = (localX, localY, localZ, yaw, w = 3.4, h = 8.6) => {
+    const normalX = Math.sin(yaw);
+    const normalZ = Math.cos(yaw);
+    const face = new THREE.Mesh(
+      new THREE.BoxGeometry(w + 0.65, h + 0.9, 0.7),
+      faceMat
+    );
+    face.position.set(localX, localY, localZ);
+    face.rotation.y = yaw;
+    face.castShadow = true;
+    face.receiveShadow = true;
+    cliff.add(face);
 
-  const foam = new THREE.Mesh(
-    new THREE.CircleGeometry(2.05, 24),
-    new THREE.MeshStandardMaterial({ color: 0xe2f3ff, roughness: 0.7, transparent: true, opacity: 0.72 })
-  );
-  foam.rotation.x = -Math.PI / 2;
-  foam.position.set(0.35, -0.26, 1.36);
-  cliff.add(foam);
+    const stream = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, 0.92),
+      new THREE.MeshBasicMaterial({
+        color: 0x2ea9ff,
+        transparent: true,
+        opacity: 0.8,
+        side: THREE.DoubleSide,
+        depthTest: true,
+        depthWrite: false
+      })
+    );
+    // Slight outward offset; thickness keeps it visible from both camera sides.
+    stream.position.set(
+      localX + normalX * 0.16,
+      localY - 0.12,
+      localZ + normalZ * 0.16
+    );
+    stream.rotation.y = yaw;
+    stream.renderOrder = 20;
+    cliff.add(stream);
+
+    const streakMat = new THREE.MeshBasicMaterial({
+      color: 0xeaf7ff,
+      transparent: true,
+      opacity: 0.92,
+      depthTest: true,
+      depthWrite: false
+    });
+    for (let i = 0; i < 11; i += 1) {
+      const streak = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 2.0 + Math.random() * 0.9), streakMat);
+      streak.position.set(
+        (Math.random() - 0.5) * (w - 0.6),
+        (Math.random() - 0.5) * (h - 0.8),
+        0.02
+      );
+      stream.add(streak);
+    }
+
+    const foam = new THREE.Mesh(
+      new THREE.CircleGeometry(1.35, 18),
+      new THREE.MeshBasicMaterial({
+        color: 0xe8f7ff,
+        transparent: true,
+        opacity: 0.74,
+        depthTest: true,
+        depthWrite: false
+      })
+    );
+    foam.rotation.x = -Math.PI / 2;
+    foam.position.set(
+      localX + normalX * 0.42,
+      0.1,
+      localZ + normalZ * 0.42
+    );
+    foam.renderOrder = 21;
+    cliff.add(foam);
+  };
+
+  // Two visible faces so at least one waterfall is always seen from common camera angles.
+  makeWaterfallFace(-2.25, 4.4, -1.25, Math.PI * 0.12, 3.8, 9.2);
+  makeWaterfallFace(2.0, 4.2, 1.05, -Math.PI * 0.85, 2.8, 7.1);
 
   scene.add(cliff);
   addWorldCollider(x, z, 3.35, 'cliff');
@@ -1654,6 +1811,10 @@ function isWaterAt(x, z) {
   const radius = Math.hypot(x, z);
   if (radius > SWIM_MAX_RADIUS) return false;
 
+  // Brute-force dock safety: never treat areas around docks as water.
+  if (Math.hypot(x - ISLAND_DOCK_POS.x, z - ISLAND_DOCK_POS.z) <= 16) return false;
+  if (Math.hypot(x - LIGHTHOUSE_DOCK_POS.x, z - LIGHTHOUSE_DOCK_POS.z) <= 14) return false;
+
   // Hard land-safe radius for the main island footprint.
   if (radius <= worldLimit + 8.4) return false;
 
@@ -1675,6 +1836,12 @@ function isWaterAt(x, z) {
   const onLighthouseIslandLand = Math.hypot(dxL, dzL) <= 15.4;
   if (onLighthouseIslandLand) return false;
 
+  if (isInDockWalkZone(x, z, 3.0, 2.5)) return false;
+
+  return true;
+}
+
+function isInDockWalkZone(x, z, forwardPad = 0, sidePad = 0) {
   for (const zone of dockWalkZones) {
     const dx = x - zone.x;
     const dz = z - zone.z;
@@ -1684,22 +1851,45 @@ function isWaterAt(x, z) {
     const rZ = -Math.sin(zone.yaw);
     const forward = dx * fX + dz * fZ;
     const side = dx * rX + dz * rZ;
-    // Expand dry area around docks so planks, rails and edges remain walkable.
     if (
-      forward >= zone.minForward - 1.6 &&
-      forward <= zone.maxForward + 1.6 &&
-      Math.abs(side) <= zone.halfWidth + 1.25
+      forward >= zone.minForward - forwardPad &&
+      forward <= zone.maxForward + forwardPad &&
+      Math.abs(side) <= zone.halfWidth + sidePad
     ) {
-      return false;
+      return true;
     }
   }
+  return false;
+}
 
-  return true;
+function dockFloorHeightAt(x, z, forwardPad = 0, sidePad = 0) {
+  let best = null;
+  for (const zone of dockWalkZones) {
+    const dx = x - zone.x;
+    const dz = z - zone.z;
+    const fX = Math.sin(zone.yaw);
+    const fZ = Math.cos(zone.yaw);
+    const rX = Math.cos(zone.yaw);
+    const rZ = -Math.sin(zone.yaw);
+    const forward = dx * fX + dz * fZ;
+    const side = dx * rX + dz * rZ;
+    if (
+      forward >= zone.minForward - forwardPad &&
+      forward <= zone.maxForward + forwardPad &&
+      Math.abs(side) <= zone.halfWidth + sidePad
+    ) {
+      const y = Number.isFinite(zone.floorY) ? zone.floorY : GROUND_Y;
+      if (best === null || y > best) best = y;
+    }
+  }
+  return best;
 }
 
 function groundHeightAt(x, z, currentY) {
   const stairY = sampleInteriorStairHeight(x, z, currentY);
   if (Number.isFinite(stairY)) return stairY;
+  const dockY = dockFloorHeightAt(x, z, 2.2, 2.2);
+  if (Number.isFinite(dockY)) return dockY;
   return GROUND_Y;
 }
 
@@ -1720,11 +1910,20 @@ function getSwimVerticalIntent() {
 }
 
 function applySwimVertical(local, delta, nowMs) {
-  const intent = getSwimVerticalIntent();
   const bobBase = swimAnimationLevel(nowMs);
-  const targetY = bobBase + intent * 0.45;
-  const follow = intent === 0 ? 3.6 : 5.4;
-  local.y += (targetY - local.y) * Math.min(1, delta * follow);
+  const upHeld = keys.has(' ') || keys.has('space') || keys.has('w') || keys.has('arrowup');
+  const downHeld = keys.has('c') || keys.has('control') || keys.has('s') || keys.has('arrowdown');
+  const verticalSwimSpeed = 2.8;
+
+  if (upHeld && !downHeld) {
+    local.y += verticalSwimSpeed * delta;
+  } else if (downHeld && !upHeld) {
+    local.y -= verticalSwimSpeed * delta;
+  } else {
+    // Gentle return toward the surface when no vertical input is held.
+    local.y += (bobBase - local.y) * Math.min(1, delta * 1.3);
+  }
+
   local.y = THREE.MathUtils.clamp(local.y, SWIM_SINK_Y, SWIM_SURFACE_Y + 0.6);
   local.vy = 0;
 }
@@ -1758,6 +1957,12 @@ function preserveLocalInWater(local, prevY) {
 }
 
 function computeRemoteSwimState(player) {
+  const remoteDockY = dockFloorHeightAt(player.mesh.position.x, player.mesh.position.z, 2.2, 2.2);
+  if (Number.isFinite(remoteDockY)) {
+    player.isSwimming = false;
+    if (player.mesh.position.y < remoteDockY) player.mesh.position.y = remoteDockY;
+    return;
+  }
   // If a player is at normal ground height, always treat as walking.
   if (player.mesh.position.y >= GROUND_Y - 0.08) {
     player.isSwimming = false;
@@ -1780,14 +1985,24 @@ function swimStateFromPosition(player) {
 }
 
 function applyLocalSurfaceState(local) {
+  const localDockY = dockFloorHeightAt(local.x, local.z, 2.2, 2.2);
+  if (Number.isFinite(localDockY)) {
+    local.isSwimming = false;
+    local.swimTargetY = null;
+    local.y = localDockY;
+    local.vy = 0;
+    return;
+  }
   // Ground-height safeguard: never swim while standing on sand/land.
   if (local.y >= GROUND_Y - 0.08) {
     local.isSwimming = false;
+    local.swimTargetY = null;
     return;
   }
   const inWater = isWaterAt(local.x, local.z) && !inLighthouseInterior && !local.onBoat;
   if (!inWater) {
     local.isSwimming = false;
+    local.swimTargetY = null;
     return;
   }
   if (local.isSwimming) {
@@ -1795,6 +2010,9 @@ function applyLocalSurfaceState(local) {
     return;
   }
   local.isSwimming = local.y <= GROUND_Y + 0.65;
+  if (local.isSwimming) {
+    local.swimTargetY = THREE.MathUtils.clamp(local.y, SWIM_SINK_Y, SWIM_SURFACE_Y + 0.35);
+  }
 }
 
 function surfaceMoveMultiplier(local) {
@@ -1860,7 +2078,10 @@ function interactWhileSwimming(local) {
 }
 
 function stopSwimOnTeleport(local) {
-  if (local) local.isSwimming = false;
+  if (local) {
+    local.isSwimming = false;
+    local.swimTargetY = null;
+  }
 }
 
 function swimHintText() {
@@ -3648,6 +3869,13 @@ fullscreenToggleEl?.addEventListener('click', async () => {
 menuOverlayEl?.addEventListener('click', (event) => {
   if (event.target === menuOverlayEl) setMenuOpen(false);
 });
+minimapToggleEl?.addEventListener('click', () => {
+  setMinimapEnabled(!minimapEnabled);
+});
+minimapEl?.addEventListener('click', () => {
+  if (!minimapEnabled) return;
+  setMinimapExpanded(!minimapExpanded);
+});
 saveQuitEl?.addEventListener('click', () => {
   disableVoice();
   setCustomizeModal(false);
@@ -3704,6 +3932,7 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  applyResponsiveLayout();
 });
 
 window.addEventListener('beforeunload', () => {
@@ -4203,6 +4432,7 @@ function headingText() {
 }
 
 function drawMinimap() {
+  if (!minimapEnabled || !minimapEl || !minimapCtx) return;
   const size = minimapEl.width;
   const center = size / 2;
   const radius = center - 8;
