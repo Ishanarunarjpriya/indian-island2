@@ -1,5 +1,27 @@
 import * as THREE from 'https://unpkg.com/three@0.165.0/build/three.module.js';
 
+let lastFrameTime = performance.now();
+let fps = 0;
+
+flet lastFrameTime = performance.now();
+let fps = 0;
+
+function updateFPS() {
+  const now = performance.now();
+  fps = Math.round(1000 / (now - lastFrameTime));
+  lastFrameTime = now;
+
+  const fpsValue = document.getElementById("fps-value");
+  if (fpsValue) fpsValue.textContent = fps;
+}
+
+function gameLoop() {
+  updateFPS();
+  requestAnimationFrame(gameLoop);
+}
+
+requestAnimationFrame(gameLoop);
+
 const socket = io();
 const players = new Map();
 const interactables = new Map();
@@ -75,13 +97,11 @@ if (authUsernameEl) authUsernameEl.value = cachedAuthUsername;
 if (authPasswordEl) authPasswordEl.value = cachedAuthPassword;
 
 function makeGuestCredentials() {
-  const arr = new Uint8Array(6);
-  crypto.getRandomValues(arr);
-  const suffix = Array.from(arr).map(b => b.toString(36)).join('').slice(0, 8);
-  const arr2 = new Uint8Array(2);
-  crypto.getRandomValues(arr2);
-  const pin = (arr2[0] * 256 + arr2[1]) % 9000 + 1000;
-  return { username: `guest_${suffix}`, password: `g_${suffix}${pin}` };
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return {
+    username: `guest_${suffix}`,
+    password: `g_${suffix}${Math.floor(1000 + Math.random() * 9000)}`
+  };
 }
 
 function persistAuth(username, password) {
@@ -2866,14 +2886,6 @@ function removePlayer(id) {
   const player = players.get(id);
   if (!player) return;
   scene.remove(player.mesh);
-  // Dispose geometry and materials to prevent GPU memory leak on player leave
-  player.mesh.traverse((obj) => {
-    if (obj.geometry) obj.geometry.dispose();
-    if (obj.material) {
-      if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
-      else obj.material.dispose();
-    }
-  });
   player.label?.remove();
   player.bubble?.remove();
   players.delete(id);
@@ -4096,9 +4108,6 @@ renderer.domElement.addEventListener(
 let dayTime = 0.23;
 let rainActive = false;
 let nextWeatherToggleAt = 15;
-// Pre-allocated color objects — avoids new THREE.Color() every frame
-const _skyColor = new THREE.Color();
-const _fogColor = new THREE.Color();
 
 function updateDayAndWeather(delta, nowSeconds) {
   dayTime = (dayTime + delta / 240) % 1;
@@ -4109,10 +4118,10 @@ function updateDayAndWeather(delta, nowSeconds) {
   hemi.intensity = 0.32 + dayFactor * 0.8;
   sun.position.set(Math.cos(sunAngle) * 40, 16 + dayFactor * 26, Math.sin(sunAngle) * 40);
 
-  _skyColor.setHSL(0.56, 0.45, 0.14 + dayFactor * 0.53);
-  _fogColor.setHSL(0.56, 0.35, 0.11 + dayFactor * 0.42);
-  scene.fog.color.copy(_fogColor);
-  renderer.setClearColor(_skyColor);
+  const sky = new THREE.Color().setHSL(0.56, 0.45, 0.14 + dayFactor * 0.53);
+  const fog = new THREE.Color().setHSL(0.56, 0.35, 0.11 + dayFactor * 0.42);
+  scene.fog.color.copy(fog);
+  renderer.setClearColor(sky);
 
   if (nowSeconds > nextWeatherToggleAt) {
     rainActive = Math.random() > 0.55;
@@ -4124,7 +4133,6 @@ function updateDayAndWeather(delta, nowSeconds) {
 
   if (rainActive) {
     const attr = rainGeometry.attributes.position;
-    // Only iterate particles when rain is actually visible
     for (let i = 0; i < rainCount; i += 1) {
       const idx = i * 3;
       attr.array[idx + 1] -= delta * 22;
@@ -4508,9 +4516,6 @@ function drawMinimap() {
 }
 
 const clock = new THREE.Clock();
-// Throttle timestamps for expensive per-frame operations
-let _lastMinimapDraw = 0;
-let _lastNameTagUpdate = 0;
 function animate(nowMs) {
   const delta = clock.getDelta();
   const nowSeconds = nowMs / 1000;
@@ -4574,16 +4579,8 @@ function animate(nowMs) {
     camera.lookAt(local.x, headTrackY - (local.isSwimming ? 0.2 : 0.05), local.z);
   }
 
-  // Name tags: update at most every 50 ms
-  if (nowMs - _lastNameTagUpdate >= 50) {
-    updateNameTags();
-    _lastNameTagUpdate = nowMs;
-  }
-  // Minimap: redraw at most every 100 ms
-  if (nowMs - _lastMinimapDraw >= 100) {
-    drawMinimap();
-    _lastMinimapDraw = nowMs;
-  }
+  updateNameTags();
+  drawMinimap();
   renderer.render(scene, camera);
   renderPreview();
   requestAnimationFrame(animate);
