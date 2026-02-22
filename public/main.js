@@ -1353,6 +1353,7 @@ function addWoodHouse(x, z, yaw = 0) {
 function addCliffAndWaterfall(x, z) {
   const cliff = new THREE.Group();
   cliff.position.set(x, 0, z);
+  const cliffRockMeshes = [];
   const rockMat = new THREE.MeshStandardMaterial({ color: 0x586069, roughness: 0.93 });
   const faceMat = new THREE.MeshStandardMaterial({ color: 0x5f6872, roughness: 0.9 });
   const mainRock = new THREE.Mesh(
@@ -1364,6 +1365,7 @@ function addCliffAndWaterfall(x, z) {
   mainRock.castShadow = true;
   mainRock.receiveShadow = true;
   cliff.add(mainRock);
+  cliffRockMeshes.push(mainRock);
 
   for (let i = 0; i < 11; i += 1) {
     let rx = (Math.random() - 0.5) * 7.6;
@@ -1382,6 +1384,7 @@ function addCliffAndWaterfall(x, z) {
     rock.castShadow = true;
     rock.receiveShadow = true;
     cliff.add(rock);
+    cliffRockMeshes.push(rock);
   }
 
   const makeWaterfallFace = (localX, localY, localZ, yaw, w = 3.4, h = 8.6) => {
@@ -1460,7 +1463,11 @@ function addCliffAndWaterfall(x, z) {
   makeWaterfallFace(2.0, 4.2, 1.05, -Math.PI * 0.85, 2.8, 7.1);
 
   scene.add(cliff);
-  addWorldCollider(x, z, 3.35, 'cliff');
+  cliff.updateWorldMatrix(true, true);
+  // Rock collision should follow the real cliff mesh footprint, not a single wide radius.
+  for (const rockMesh of cliffRockMeshes) {
+    addWallCollisionFromMesh(rockMesh, 'cliff');
+  }
 }
 
 function populateMainIslandNature() {
@@ -3360,7 +3367,7 @@ socket.on('init', (payload) => {
   const local = payload.players.find((player) => player.id === localPlayerId);
   if (local) {
     applyPlayerCustomization(local.id, local.name, local.color, local.appearance);
-    customizeStatusEl.textContent = `Saved as ${local.name || 'Player'}`;
+    customizeStatusEl.textContent = `Loaded account avatar for ${local.name || 'Player'}.`;
   }
 
   statusEl.textContent = 'Connected';
@@ -3522,6 +3529,23 @@ window.addEventListener('keydown', (event) => {
   }
 
   if (
+    key === 'v' &&
+    !event.repeat &&
+    isAuthenticated &&
+    authModalEl.classList.contains('hidden') &&
+    customizeModalEl.classList.contains('hidden') &&
+    !typingInInput
+  ) {
+    event.preventDefault();
+    firstPersonEnabled = !firstPersonEnabled;
+    if (!firstPersonEnabled) {
+      cameraPitch = clampGameplayCameraPitch(cameraPitch);
+      cameraDistanceTarget = Math.max(CAMERA_DIST_MIN, cameraDistanceTarget);
+    }
+    return;
+  }
+
+  if (
     key === 'f' &&
     !event.repeat &&
     isAuthenticated &&
@@ -3563,13 +3587,27 @@ window.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('keyup', (event) => {
-  if (!isAuthenticated || menuOpen || !customizeModalEl.classList.contains('hidden')) return;
   const key = event.key.toLowerCase();
+  // Always release keys even while menus/modals are open, so input cannot get stuck.
+  keys.delete(key);
+  if (!isAuthenticated || menuOpen || !customizeModalEl.classList.contains('hidden')) return;
   if (key === 'q') {
     emoteWheelOpen = false;
     emoteWheelEl?.classList.add('hidden');
   }
-  keys.delete(key);
+});
+
+// Safety: if the tab/window loses focus while a key is held, clear all pressed state.
+window.addEventListener('blur', () => {
+  keys.clear();
+  pendingJump = false;
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    keys.clear();
+    pendingJump = false;
+  }
 });
 
 chatFormEl.addEventListener('submit', (event) => {
@@ -3589,10 +3627,13 @@ let previewRenderer = null;
 let previewAvatar = null;
 let previewLight = null;
 let previewYaw = 0;
+let previewPitch = -0.08;
+let previewDistance = 6.4;
 let previewAutoSpin = true;
 let previewDragging = false;
 let previewPointerId = null;
 let previewLastX = 0;
+let previewLastY = 0;
 
 function currentFormAppearance() {
   return normalizeAppearance(
@@ -3635,7 +3676,7 @@ function ensurePreviewScene() {
   previewScene = new THREE.Scene();
   previewScene.background = new THREE.Color(0x111827);
   previewCamera = new THREE.PerspectiveCamera(40, 1, 0.1, 50);
-  previewCamera.position.set(0, 2.5, 6.4);
+  previewCamera.position.set(0, 2.5, previewDistance);
   previewLight = new THREE.DirectionalLight(0xffffff, 1.25);
   previewLight.position.set(5, 8, 7);
   previewScene.add(new THREE.HemisphereLight(0xdbeafe, 0x1f2937, 0.86), previewLight);
@@ -3649,10 +3690,12 @@ function ensurePreviewScene() {
   previewRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
   const startDrag = (event) => {
+    event.preventDefault();
     previewDragging = true;
     previewAutoSpin = false;
     previewPointerId = event.pointerId;
     previewLastX = event.clientX;
+    previewLastY = event.clientY;
     if (customizePreviewEl.setPointerCapture) {
       try {
         customizePreviewEl.setPointerCapture(event.pointerId);
@@ -3662,9 +3705,13 @@ function ensurePreviewScene() {
 
   const moveDrag = (event) => {
     if (!previewDragging || (previewPointerId !== null && event.pointerId !== previewPointerId)) return;
+    event.preventDefault();
     const dx = event.clientX - previewLastX;
+    const dy = event.clientY - previewLastY;
     previewLastX = event.clientX;
+    previewLastY = event.clientY;
     previewYaw += dx * 0.012;
+    previewPitch = THREE.MathUtils.clamp(previewPitch + dy * 0.004, -0.65, 0.45);
   };
 
   const endDrag = (event) => {
@@ -3678,6 +3725,15 @@ function ensurePreviewScene() {
   customizePreviewEl.addEventListener('pointerup', endDrag);
   customizePreviewEl.addEventListener('pointercancel', endDrag);
   customizePreviewEl.addEventListener('pointerleave', endDrag);
+  customizePreviewEl.addEventListener(
+    'wheel',
+    (event) => {
+      event.preventDefault();
+      previewAutoSpin = false;
+      previewDistance = THREE.MathUtils.clamp(previewDistance + event.deltaY * 0.01, 4.2, 9.2);
+    },
+    { passive: false }
+  );
 }
 
 function updatePreviewAvatar() {
@@ -3695,6 +3751,8 @@ function renderPreview() {
   const height = Math.max(220, customizePreviewEl.clientHeight || customizePreviewEl.height);
   previewRenderer.setSize(width, height, false);
   previewCamera.aspect = width / height;
+  previewCamera.position.set(0, 2.5, previewDistance);
+  previewCamera.lookAt(0, 1.55 + Math.sin(previewPitch) * 0.55, 0);
   previewCamera.updateProjectionMatrix();
   if (previewAutoSpin && !previewDragging) {
     previewYaw += 0.012;
@@ -3830,7 +3888,7 @@ customizeFormEl.addEventListener('submit', (event) => {
     }
 
     applyPlayerCustomization(localPlayerId, response.name, response.color, response.appearance);
-    customizeStatusEl.textContent = `Saved as ${response.name}. This is now your spawn avatar.`;
+    customizeStatusEl.textContent = `Saved spawn avatar for ${response.name}. You will spawn with this avatar until you change it.`;
   });
 });
 
@@ -4033,17 +4091,28 @@ let slideDirZ = 0;
 
 const CAMERA_PITCH_MIN = 0.2;
 const CAMERA_PITCH_MAX = 1.18;
+const CAMERA_PITCH_FIRST_PERSON_MIN = -1.12;
+const CAMERA_PITCH_FIRST_PERSON_MAX = 1.12;
 const CAMERA_DIST_MIN = 8;
 const CAMERA_DIST_MAX = 30;
 const CAMERA_DIST_START = 17;
+const FIRST_PERSON_EYE_HEIGHT = 1.94;
+const FIRST_PERSON_EYE_HEIGHT_SWIM = 1.08;
 let cameraYaw = 0;
 let cameraPitch = 0.58;
 let cameraDistance = CAMERA_DIST_START;
 let cameraDistanceTarget = CAMERA_DIST_START;
+let firstPersonEnabled = false;
 let isOrbiting = false;
 let orbitPointerId = null;
 let lastPointerX = 0;
 let lastPointerY = 0;
+
+function clampGameplayCameraPitch(value) {
+  const min = firstPersonEnabled ? CAMERA_PITCH_FIRST_PERSON_MIN : CAMERA_PITCH_MIN;
+  const max = firstPersonEnabled ? CAMERA_PITCH_FIRST_PERSON_MAX : CAMERA_PITCH_MAX;
+  return Math.max(min, Math.min(max, value));
+}
 
 renderer.domElement.addEventListener('pointerdown', (event) => {
   if (pointerLocked) return;
@@ -4058,7 +4127,7 @@ renderer.domElement.addEventListener('pointerdown', (event) => {
 renderer.domElement.addEventListener('pointermove', (event) => {
   if (pointerLocked) {
     cameraYaw -= (event.movementX || 0) * 0.0038;
-    cameraPitch = Math.max(CAMERA_PITCH_MIN, Math.min(CAMERA_PITCH_MAX, cameraPitch - (event.movementY || 0) * 0.0038));
+    cameraPitch = clampGameplayCameraPitch(cameraPitch - (event.movementY || 0) * 0.0038);
     return;
   }
   if (!isOrbiting || event.pointerId !== orbitPointerId) return;
@@ -4068,7 +4137,7 @@ renderer.domElement.addEventListener('pointermove', (event) => {
   lastPointerY = event.clientY;
 
   cameraYaw -= dx * 0.005;
-  cameraPitch = Math.max(CAMERA_PITCH_MIN, Math.min(CAMERA_PITCH_MAX, cameraPitch - dy * 0.005));
+  cameraPitch = clampGameplayCameraPitch(cameraPitch - dy * 0.005);
 });
 
 function endOrbit(event) {
@@ -4084,6 +4153,7 @@ renderer.domElement.addEventListener('pointercancel', endOrbit);
 renderer.domElement.addEventListener(
   'wheel',
   (event) => {
+    if (firstPersonEnabled) return;
     event.preventDefault();
     cameraDistanceTarget = Math.max(
       CAMERA_DIST_MIN,
@@ -4250,8 +4320,14 @@ function updateLocalPlayer(delta, nowMs) {
     const normalizedX = input.x / len;
     const normalizedZ = input.z / len;
     const forwardScale = -normalizedZ;
-    slideDirX = normalizedX * Math.cos(cameraYaw) + forwardScale * -Math.sin(cameraYaw);
-    slideDirZ = normalizedX * -Math.sin(cameraYaw) + forwardScale * -Math.cos(cameraYaw);
+    if (firstPersonEnabled) {
+      // First-person movement must match the camera's true forward/right vectors.
+      slideDirX = normalizedX * -Math.cos(cameraYaw) + forwardScale * Math.sin(cameraYaw);
+      slideDirZ = normalizedX * Math.sin(cameraYaw) + forwardScale * Math.cos(cameraYaw);
+    } else {
+      slideDirX = normalizedX * Math.cos(cameraYaw) + forwardScale * -Math.sin(cameraYaw);
+      slideDirZ = normalizedX * -Math.sin(cameraYaw) + forwardScale * -Math.cos(cameraYaw);
+    }
     const dirLen = Math.hypot(slideDirX, slideDirZ) || 1;
     slideDirX /= dirLen;
     slideDirZ /= dirLen;
@@ -4266,8 +4342,16 @@ function updateLocalPlayer(delta, nowMs) {
     const normalizedZ = input.z / len;
     const forwardScale = -normalizedZ;
 
-    const worldX = normalizedX * Math.cos(cameraYaw) + forwardScale * -Math.sin(cameraYaw);
-    const worldZ = normalizedX * -Math.sin(cameraYaw) + forwardScale * -Math.cos(cameraYaw);
+    let worldX;
+    let worldZ;
+    if (firstPersonEnabled) {
+      // First-person: W goes where camera looks, A/D strafe correctly.
+      worldX = normalizedX * -Math.cos(cameraYaw) + forwardScale * Math.sin(cameraYaw);
+      worldZ = normalizedX * Math.sin(cameraYaw) + forwardScale * Math.cos(cameraYaw);
+    } else {
+      worldX = normalizedX * Math.cos(cameraYaw) + forwardScale * -Math.sin(cameraYaw);
+      worldZ = normalizedX * -Math.sin(cameraYaw) + forwardScale * -Math.cos(cameraYaw);
+    }
     const canSprint = canSprintNow(local, sprintHeld, stamina, isSliding);
     if (canSprint) {
       speed *= SPRINT_MULTIPLIER;
@@ -4541,37 +4625,56 @@ function animate(nowMs) {
 
   const local = players.get(localPlayerId);
   if (local) {
-    const activeCameraTarget = inLighthouseInterior ? Math.min(cameraDistanceTarget, 10.5) : cameraDistanceTarget;
-    cameraDistance += (activeCameraTarget - cameraDistance) * Math.min(1, delta * 10);
-    if (inLighthouseInterior) {
-      cameraDistance = Math.min(cameraDistance, 10.5);
-      cameraDistanceTarget = activeCameraTarget;
-    }
-
-    const horizontal = Math.cos(cameraPitch) * cameraDistance;
-    const offsetX = Math.sin(cameraYaw) * horizontal;
-    const offsetY = Math.sin(cameraPitch) * cameraDistance;
-    const offsetZ = Math.cos(cameraYaw) * horizontal;
-    let desiredX = local.x + offsetX;
     const headTrackY = local.y + (local.isSwimming ? 1.15 : 1.78);
-    const desiredY = headTrackY + offsetY;
-    let desiredZ = local.z + offsetZ;
-    if (inLighthouseInterior) {
-      const camRadius = INTERIOR_PLAY_RADIUS - 1.35;
-      const cdx = desiredX - LIGHTHOUSE_INTERIOR_BASE.x;
-      const cdz = desiredZ - LIGHTHOUSE_INTERIOR_BASE.z;
-      const clen = Math.hypot(cdx, cdz);
-      if (clen > camRadius) {
-        const scale = camRadius / (clen || 1);
-        desiredX = LIGHTHOUSE_INTERIOR_BASE.x + cdx * scale;
-        desiredZ = LIGHTHOUSE_INTERIOR_BASE.z + cdz * scale;
-      }
-    }
+    if (firstPersonEnabled) {
+      local.mesh.visible = false;
+      const eyeY = local.y + (local.isSwimming ? FIRST_PERSON_EYE_HEIGHT_SWIM : FIRST_PERSON_EYE_HEIGHT);
+      const desiredX = local.x;
+      const desiredY = eyeY;
+      const desiredZ = local.z;
+      const lookDistance = 8;
+      const horizontalLook = Math.cos(cameraPitch) * lookDistance;
+      const lookX = desiredX + Math.sin(cameraYaw) * horizontalLook;
+      const lookY = desiredY + Math.sin(cameraPitch) * lookDistance;
+      const lookZ = desiredZ + Math.cos(cameraYaw) * horizontalLook;
 
-    camera.position.x += (desiredX - camera.position.x) * Math.min(1, delta * 10);
-    camera.position.y += (desiredY - camera.position.y) * Math.min(1, delta * 10);
-    camera.position.z += (desiredZ - camera.position.z) * Math.min(1, delta * 10);
-    camera.lookAt(local.x, headTrackY - (local.isSwimming ? 0.2 : 0.05), local.z);
+      camera.position.x += (desiredX - camera.position.x) * Math.min(1, delta * 14);
+      camera.position.y += (desiredY - camera.position.y) * Math.min(1, delta * 14);
+      camera.position.z += (desiredZ - camera.position.z) * Math.min(1, delta * 14);
+      camera.lookAt(lookX, lookY, lookZ);
+    } else {
+      local.mesh.visible = true;
+      const activeCameraTarget = inLighthouseInterior ? Math.min(cameraDistanceTarget, 10.5) : cameraDistanceTarget;
+      cameraDistance += (activeCameraTarget - cameraDistance) * Math.min(1, delta * 10);
+      if (inLighthouseInterior) {
+        cameraDistance = Math.min(cameraDistance, 10.5);
+        cameraDistanceTarget = activeCameraTarget;
+      }
+
+      const horizontal = Math.cos(cameraPitch) * cameraDistance;
+      const offsetX = Math.sin(cameraYaw) * horizontal;
+      const offsetY = Math.sin(cameraPitch) * cameraDistance;
+      const offsetZ = Math.cos(cameraYaw) * horizontal;
+      let desiredX = local.x + offsetX;
+      const desiredY = headTrackY + offsetY;
+      let desiredZ = local.z + offsetZ;
+      if (inLighthouseInterior) {
+        const camRadius = INTERIOR_PLAY_RADIUS - 1.35;
+        const cdx = desiredX - LIGHTHOUSE_INTERIOR_BASE.x;
+        const cdz = desiredZ - LIGHTHOUSE_INTERIOR_BASE.z;
+        const clen = Math.hypot(cdx, cdz);
+        if (clen > camRadius) {
+          const scale = camRadius / (clen || 1);
+          desiredX = LIGHTHOUSE_INTERIOR_BASE.x + cdx * scale;
+          desiredZ = LIGHTHOUSE_INTERIOR_BASE.z + cdz * scale;
+        }
+      }
+
+      camera.position.x += (desiredX - camera.position.x) * Math.min(1, delta * 10);
+      camera.position.y += (desiredY - camera.position.y) * Math.min(1, delta * 10);
+      camera.position.z += (desiredZ - camera.position.z) * Math.min(1, delta * 10);
+      camera.lookAt(local.x, headTrackY - (local.isSwimming ? 0.2 : 0.05), local.z);
+    }
   }
 
   // Name tags: update at most every 50 ms

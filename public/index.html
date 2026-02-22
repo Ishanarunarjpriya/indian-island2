@@ -14,16 +14,6 @@
         --accent: #ffd166;
       }
 
-      #fps-counter {
-    position: fixed;
-    top: 12px;
-    left: 12px;
-    font-size: 14px;
-    color: #ffffffcc;
-    pointer-events: none;
-}
-
-
       * {
         box-sizing: border-box;
       }
@@ -81,9 +71,6 @@
         border-radius: 12px;
         backdrop-filter: blur(6px);
       }
-     
-     
-       
 
       #hud {
         position: fixed;
@@ -464,6 +451,12 @@
         border-radius: 10px;
         display: block;
         background: radial-gradient(circle at 50% 30%, #2f3a4b, #0f172a 72%);
+        touch-action: none;
+        cursor: grab;
+      }
+
+      #customize-preview:active {
+        cursor: grabbing;
       }
 
       #customize-form {
@@ -813,8 +806,6 @@
       <span id="time-label">Morning</span> | <span id="weather-label">Clear</span>
     </div>
 
-    <div id="fps-counter">FPS: --</div> </body>
-
     <div id="top-left-toolbar" class="panel">
       <button id="menu-toggle" class="toolbar-btn" type="button" aria-label="Open menu">
         <span class="line-stack"><span></span><span></span><span></span></span>
@@ -885,7 +876,7 @@
     </div>
 
     <div id="hud" class="panel">
-      <h1 class="title">Indian Island</h1>
+      <h1 class="title">Multiplayer 3D Arena</h1>
       <p><strong>Connected players:</strong> <span id="player-count">1</span></p>
       <p><strong>Status:</strong> <span id="status">Connecting...</span></p>
       <p><strong>Interact:</strong> <span id="interact-hint">Move closer to beacon</span></p>
@@ -978,7 +969,7 @@
               <button class="item-card" type="button" data-type="accessory" data-value="glasses">Glasses</button>
               <button class="item-card" type="button" data-type="accessory" data-value="backpack">Backpack</button>
             </div>
-            <button id="customize-apply" type="submit">Apply Outfit</button>
+            <button id="customize-apply" type="submit">Save Spawn Avatar</button>
             <div class="section-title">Outfits</div>
             <div class="outfit-grid">
               <button class="outfit-btn" type="button" data-outfit-save="1">Save Slot 1</button>
