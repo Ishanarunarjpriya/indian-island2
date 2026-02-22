@@ -35,10 +35,10 @@
   },
   "acct-devansh_testing": {
     "name": "devansh_testing",
-    "color": "#478e91",
+    "color": "#6bd032",
     "appearance": {
       "skin": "#f3cfb3",
-      "shirt": "#478e91",
+      "shirt": "#6bd032",
       "pants": "#334155",
       "shoes": "#111827",
       "hairStyle": "short",
@@ -46,8 +46,8 @@
       "faceStyle": "smile",
       "accessories": []
     },
-    "x": 0,
+    "x": -3.8810050400622274,
     "y": 1.35,
-    "z": 0
+    "z": -12.097542767786756
   }
 }
